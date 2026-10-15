@@ -1,0 +1,12 @@
+:root{background:#141513;--line:#33372f}
+.stage{background:radial-gradient(ellipse at 50% 42%,#38383070 0%,#24261d40 36%,#14151300 70%)}
+.control-label{font-size:11px}.number-wrap input{font-size:11px}.number-wrap{font-size:10px}
+.range-extents{font-size:8px}.experiment-desc{font-size:10px}.compute-button{font-size:11px}
+.switch-row{font-size:10px}.select-row label{font-size:10px}.compute-note{font-size:9px}
+.learning-card p,.learning-intro>p{font-size:11px}.learning-card h3{font-size:12px}
+.metrics span{font-size:8px}.stage-heading{font-size:9px}.stage-live{font-size:8px}
+.stage-hint{font-size:9px}.result-conditions{font-size:8px}.layer-tab{font-size:10px}
+.history-select label,.history-select select{font-size:9px}.legend{font-size:8px}
+.model-caution{font-size:9px;line-height:1.6;color:#bda77e;margin:0 0 10px;border-left:1px solid #816f4a;padding-left:9px}
+@media(max-width:1100px){.metrics span{font-size:7px}.stage-live{font-size:7px}.stage-heading{font-size:8px}.layer-tab{font-size:9px}.experiment-desc{font-size:9px}.stage-hint{font-size:8px}}
+@media(max-width:560px){.experiment-desc{font-size:8px}.metrics span{font-size:7px}.result-conditions{font-size:7px}.stage-hint{font-size:8px}.learning-card p{font-size:11px}}

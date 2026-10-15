@@ -1,0 +1,42 @@
+[
+  {
+    "case": "no-fuel",
+    "id": "68ce030be89421144a2b",
+    "peakHRR_W": 0.0,
+    "finalPeakTemperature_C": 20.00000762939453,
+    "meanU_m_s": -5.3009256362202e-07,
+    "elapsed_s": 11.969381299975794
+  },
+  {
+    "case": "low-oxygen",
+    "id": "13c0032d9359951bfc64",
+    "peakHRR_W": 0.0,
+    "finalPeakTemperature_C": 20.000019073486328,
+    "meanU_m_s": 1.0468439541000407e-05,
+    "elapsed_s": 14.57216929999413
+  },
+  {
+    "case": "crosswind",
+    "id": "aeb4da4759f028a26e58",
+    "peakHRR_W": 591.9519300000001,
+    "finalPeakTemperature_C": 1441.7894287109375,
+    "meanU_m_s": 0.08143151551485062,
+    "elapsed_s": 109.24665230000392
+  },
+  {
+    "case": "no-heating",
+    "id": "7ef4e2f4c30c4f598b85",
+    "peakHRR_W": 0.00082171941,
+    "finalPeakTemperature_C": 20.004976272583008,
+    "meanU_m_s": 7.945344577819924e-07,
+    "elapsed_s": 10.427051200007554
+  },
+  {
+    "case": "dry-wood",
+    "id": "1ea03b27f21814633760",
+    "peakHRR_W": 1867.7486999999999,
+    "finalPeakTemperature_C": 482.6526184082031,
+    "meanU_m_s": -0.0017581748543307185,
+    "elapsed_s": 63.165058900020085
+  }
+]

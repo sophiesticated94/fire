@@ -1,0 +1,5 @@
+/* The persistent WebGL fallback remains visible while data and playback work. */
+.graphics-error{position:absolute;left:50%;top:40%;transform:translate(-50%,-50%);width:80%;max-width:330px;font-size:12px;line-height:1.8;text-align:center;color:#b5bca9}
+.result-conditions{position:absolute;left:16px;right:16px;top:100px;z-index:4;text-align:center;font-size:7px;letter-spacing:.035em;color:#859178;pointer-events:none}
+.legend[data-layer=flow] .legend-gradient{background:linear-gradient(90deg,#51b5cd,#d8b94b)}
+@media(max-width:560px){.result-conditions{font-size:6px;top:88px;letter-spacing:0}}
