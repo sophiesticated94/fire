@@ -14,8 +14,8 @@ export interface Result {
   solidBounds?:number[][];
 }
 export const defaults:Record<SceneId,Config> = {
-  burner:{scene:'burner',quality:'preview',duration:6,fuel:12,oxygen:20.9,wind:0,primary_air:.3,ambient:20,moisture:0,ignition:0},
-  candle:{scene:'candle',quality:'preview',duration:6,fuel:1.2,oxygen:20.9,wind:0,primary_air:0,ambient:20,moisture:0,ignition:0},
+  burner:{scene:'burner',quality:'preview',duration:2,fuel:12,oxygen:20.9,wind:0,primary_air:.3,ambient:20,moisture:0,ignition:0},
+  candle:{scene:'candle',quality:'preview',duration:2,fuel:1.2,oxygen:20.9,wind:0,primary_air:0,ambient:20,moisture:0,ignition:0},
   wood:{scene:'wood',quality:'preview',duration:15,fuel:0,oxygen:20.9,wind:0,primary_air:0,ambient:20,moisture:12,ignition:35},
 };
 export const sceneNames:Record<SceneId,string> = {burner:'Palnik gazowy',candle:'Świeca',wood:'Drewno'};

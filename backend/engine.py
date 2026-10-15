@@ -10,6 +10,7 @@ import threading
 import time
 from .models import Experiment, make_deck
 from .converter import convert
+from .solver_config import WindowsJobObject, get_solver_env, get_solver_command
 
 ROOT = Path(__file__).resolve().parent.parent
 RUNS = ROOT/'runs'
@@ -26,12 +27,7 @@ def solver_path():
 
 
 def solver_env(exe: Path):
-    env = os.environ.copy()
-    env['PATH'] = str(exe.parent)+os.pathsep+str(exe.parent/'mpi')+os.pathsep+env.get('PATH','')
-    try: threads=max(1,min(8,int(os.environ.get('IGNIS_THREADS','8'))))
-    except ValueError: threads=8
-    env.update(OMP_NUM_THREADS=str(threads), I_MPI_ROOT=str(exe.parent/'mpi'), I_MPI_FABRICS='shm')
-    return env
+    return get_solver_env(exe)
 
 
 class Engine:
@@ -41,6 +37,7 @@ class Engine:
         self.active = None
         self.jobs = {}
         self.process = None
+        self.job_object = None
         self.stop_event = threading.Event()
         self.started = 0
         self.lease = None
@@ -100,17 +97,14 @@ class Engine:
             exe = solver_path()
             if not exe:
                 raise FileNotFoundError('Brak FDS 6.11.1. Uruchom scripts/setup.ps1.')
-            # The non-OpenMP executable avoids synchronization overhead when
-            # the user explicitly requests a single thread.
-            if os.environ.get('IGNIS_THREADS','8') == '1' and (exe.parent/'fds.exe').exists():
-                exe = exe.parent/'fds.exe'
             self._lease()
             folder = RUNS/ident
             try:
                 folder.mkdir(exist_ok=True)
                 # A retry starts clean: only remove artifacts in this exact job.
-                for file in folder.iterdir():
-                    if file.is_file(): file.unlink()
+                for item in folder.iterdir():
+                    if item.is_file() or item.is_symlink(): item.unlink()
+                    elif item.is_dir(): shutil.rmtree(item, ignore_errors=True)
                 (folder/'ignis.fds').write_text(make_deck(config),encoding='ascii')
                 (folder/'config.json').write_text(json.dumps(config.canonical()),encoding='utf-8')
             except Exception:
@@ -127,6 +121,8 @@ class Engine:
             if self.active != ident:
                 return self.status(ident)
             self.stop_event.set()
+            if self.job_object:
+                self.job_object.terminate()
             if self.process and self.process.poll() is None:
                 self.process.terminate()
             self.jobs[ident]['status'] = 'cancelling'
@@ -135,11 +131,17 @@ class Engine:
     def _run(self, ident, config, exe, folder):
         started = time.monotonic()
         job = self.jobs[ident]
+        cmd = get_solver_command(exe)
+        self.job_object = WindowsJobObject()
         try:
             with (folder/'solver.log').open('w',encoding='utf-8') as log:
-                self.process = subprocess.Popen([str(exe),'ignis.fds'],cwd=folder,env=solver_env(exe),stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+                self.process = subprocess.Popen(cmd,cwd=folder,env=solver_env(exe),stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+                if self.job_object:
+                    self.job_object.assign_process(self.process.pid)
                 while self.process.poll() is None:
                     if self.stop_event.wait(0.5):
+                        if self.job_object:
+                            self.job_object.terminate()
                         self.process.terminate()
                         try: self.process.wait(timeout=5)
                         except subprocess.TimeoutExpired: self.process.kill(); self.process.wait()
@@ -169,6 +171,9 @@ class Engine:
             with self.lock:
                 self.active = None
                 self.process = None
+                if self.job_object:
+                    self.job_object.close()
+                    self.job_object = None
                 self._release()
 
     def history(self):
@@ -187,6 +192,10 @@ class Engine:
     def shutdown(self):
         """Never leave a CPU-intensive native process orphaned on server exit."""
         self.stop_event.set()
+        if self.job_object:
+            self.job_object.terminate()
+            self.job_object.close()
+            self.job_object = None
         p = self.process
         if p is not None and p.poll() is None:
             p.terminate()
