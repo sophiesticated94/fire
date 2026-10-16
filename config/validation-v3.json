@@ -1,0 +1,7 @@
+{
+  "version": "validation-3",
+  "status": "pending-review",
+  "reason": "Temporal, flux and probe limits require explicit review of the OpenMP repeatability report.",
+  "temporalLimits": null,
+  "diagnosticLimits": null
+}

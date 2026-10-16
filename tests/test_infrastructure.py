@@ -48,6 +48,9 @@ def test_profile_cache_identity_and_exact_promotion(monkeypatch,tmp_path):
     assert c.key(omp)!=c.key()
     monkeypatch.setenv('IGNIS_SOLVER','auto');monkeypatch.setattr(p,'REGISTRY',tmp_path/'profiles.json')
     receipt=dict(mode='mpi4',signature=validation_signature(c,mpi),passed=True,speedup=1.1,measuredRuns=3,median=100)
+    atomic_json(p.REGISTRY,[receipt]);assert resolve_profile(exe,c).mode=='openmp'
+    monkeypatch.setattr(p,'validation_policy',lambda:dict(approved=True,hash='reviewed'))
+    receipt.update(validationVersion='validation-3',policyHash='reviewed')
     atomic_json(p.REGISTRY,[receipt]);assert resolve_profile(exe,c).mode=='mpi4'
     assert resolve_profile(exe,Experiment(fuel=13)).mode=='openmp'
     assert resolve_profile(exe,Experiment(quality='fine')).mode=='openmp'

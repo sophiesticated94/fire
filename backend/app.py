@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from .engine import Engine, ROOT, solver_path
 from .models import Experiment
@@ -14,7 +14,7 @@ async def lifespan(app):
     yield
     engine.shutdown()
 
-app = FastAPI(title='IGNIS local CFD API',version='1.1.0',lifespan=lifespan)
+app = FastAPI(title='IGNIS local CFD API',version='1.2.0',lifespan=lifespan)
 
 
 @app.get('/api/health')
@@ -80,8 +80,9 @@ def preview_manifest(ident: str):
     except KeyError: raise HTTPException(404,'Nie znaleziono eksperymentu')
     path=folder/'preview/manifest.json'
     if not path.exists(): raise HTTPException(409,'Pierwsze klatki nie są jeszcze gotowe')
-    from fastapi.responses import JSONResponse
-    return JSONResponse(json.loads(path.read_text(encoding='utf-8')),headers={'Cache-Control':'no-store'})
+    # Capture one immutable byte snapshot. FileResponse stats then opens the
+    # pathname later; atomic replacement could change its Content-Length.
+    return Response(path.read_bytes(),media_type='application/json',headers={'Cache-Control':'no-store'})
 
 
 @app.get('/api/experiments/{ident}/preview/frames/{frame}')

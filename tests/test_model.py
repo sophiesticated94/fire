@@ -133,7 +133,7 @@ def test_solver_failure_exposes_error(monkeypatch,tmp_path):
     import backend.engine as module
     monkeypatch.setattr(module,'RUNS',tmp_path)
     original=module.make_deck
-    monkeypatch.setattr(module,'make_deck',lambda c,ranks=1:original(c,ranks).replace('IJK=32,32,64','IJK=0,0,0'))
+    monkeypatch.setattr(module,'make_deck',lambda c,ranks=1,**kwargs:original(c,ranks,**kwargs).replace('IJK=32,32,64','IJK=0,0,0'))
     if not solver_path(): pytest.skip('Native FDS required')
     engine=Engine();job=engine.create(Experiment(duration=1))
     deadline=time.monotonic()+20

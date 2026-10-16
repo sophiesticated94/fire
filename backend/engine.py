@@ -14,11 +14,16 @@ from .runner import ProcessTree
 from .progressive import ProgressiveConverter,atomic_json
 
 ROOT=Path(__file__).resolve().parent.parent
-RUNS=ROOT/'runs'
+RUNS=Path(os.environ.get('IGNIS_RUNS_DIR',str(ROOT/'runs'))).resolve()
+LEASE_ROOT=ROOT/'runs'
 SAMPLES=ROOT/'samples'
 
 def solver_path():
-    choices=[os.environ.get('IGNIS_FDS',''),ROOT/'tools/fds/firemodels/FDS6/bin/fds_openmp.exe',Path('C:/Program Files/firemodels/FDS6/bin/fds_openmp.exe')]
+    explicit=os.environ.get('IGNIS_FDS')
+    if explicit:
+        path=Path(explicit).expanduser()
+        return path.resolve() if path.is_file() else None
+    choices=[ROOT/'tools/fds/firemodels/FDS6/bin/fds_openmp.exe',Path('C:/Program Files/firemodels/FDS6/bin/fds_openmp.exe')]
     for p in choices:
         if p and Path(p).is_file(): return Path(p).resolve()
     found=shutil.which('fds_openmp') or shutil.which('fds')
@@ -30,13 +35,14 @@ def solver_env(exe):
 
 class Engine:
     def __init__(self):
-        RUNS.mkdir(exist_ok=True)
+        RUNS.mkdir(parents=True,exist_ok=True)
         self.lock=threading.RLock();self.active=None;self.jobs={};self.process=None
         self.stop_event=threading.Event();self.lease=None;self.worker=None
         atexit.register(self.shutdown)
 
     def _lease(self):
-        handle=(RUNS/'.solver.lock').open('a+b');handle.seek(0,2)
+        LEASE_ROOT.mkdir(parents=True,exist_ok=True)
+        handle=(LEASE_ROOT/'.solver.lock').open('a+b');handle.seek(0,2)
         if handle.tell()==0: handle.write(b'0');handle.flush()
         handle.seek(0)
         try:
@@ -92,17 +98,19 @@ class Engine:
     def create(self,config:Experiment):
         with self.lock:
             exe=solver_path()
-            if not exe: raise FileNotFoundError('Brak FDS 6.11.1. Uruchom scripts/setup.ps1.')
+            if not exe:
+                if os.environ.get('IGNIS_FDS'):raise FileNotFoundError('IGNIS_FDS nie wskazuje istniejącego pliku solvera.')
+                raise FileNotFoundError('Brak FDS 6.11.1. Uruchom scripts/setup.ps1.')
             profile=resolve_profile(exe,config);ident=config.key(profile)
             try:
                 folder=self.folder(ident)
-                if (folder/'result.json').exists(): return dict(id=ident,status='completed',progress=1,cached=True,profile=profile.identity())
+                if (folder/'result.json').exists() and os.environ.get('IGNIS_CACHE_READ','1')!='0': return dict(id=ident,status='completed',progress=1,cached=True,profile=profile.identity())
             except KeyError: pass
             if self.active: raise RuntimeError('Inny eksperyment jest już obliczany.')
             self._lease()
             try:
                 attempt=uuid.uuid4().hex;root=RUNS/ident;folder=root/'attempts'/attempt;folder.mkdir(parents=True)
-                (folder/'ignis.fds').write_text(make_deck(config,profile.ranks),encoding='ascii')
+                (folder/'ignis.fds').write_text(make_deck(config,profile.ranks,profile=profile,diagnostics=profile.diagnostics!='none'),encoding='ascii')
                 atomic_json(folder/'config.json',config.canonical())
                 atomic_json(root/'latest.json',{'attempt':attempt})
                 self.jobs[ident]=dict(id=ident,attempt=attempt,status='running',progress=0,physicalTime=0,duration=config.duration,config=config.canonical(),profile=profile.identity())
@@ -125,7 +133,9 @@ class Engine:
             return dict(self.jobs[ident])
 
     def _run(self,ident,config,profile,folder):
-        started=time.monotonic();job=self.jobs[ident];tree=None;pipeline=None;affinity={}
+        started=time.monotonic();job=self.jobs[ident];tree=None;pipeline=None;affinity={};threads={};conversion=0;first_frame=None
+        from .incremental import Deadline,OutputProgress
+        telemetry_deadline=Deadline(2);status_deadline=Deadline(1);progress=OutputProgress(folder/'ignis.out')
         try:
             pipeline=ProgressiveConverter(folder,config,profile,ident,job['attempt'])
             with (folder/'solver.log').open('wb') as log:
@@ -137,19 +147,17 @@ class Engine:
                 while tree and tree.poll() is None and not self.stop_event.wait(.2):
                     elapsed=time.monotonic()-started
                     if elapsed>timeout: raise TimeoutError(f'Przekroczono limit obliczeń {timeout:g} s.')
-                    if int(elapsed)%2==0:affinity.update(tree.telemetry().get('processAffinity',{}))
-                    pipeline.drain(elapsed,stop=self.stop_event)
-                    output=folder/'ignis.out'
-                    if output.exists():
-                        content=output.read_text(errors='replace')
-                        matches=re.findall(r'Total Time:\s*([\d.E+\-]+)',content)
-                        if matches:
-                            t=float(matches[-1]);job.update(physicalTime=t,progress=min(.96,t/config.duration*.96))
+                    if telemetry_deadline.due(elapsed):
+                        sample=tree.telemetry();affinity.update(sample.get('processAffinity',{}));threads.update(sample.get('threadAffinity',{}))
+                    conversion_started=time.monotonic();pipeline.drain(elapsed,stop=self.stop_event);conversion+=time.monotonic()-conversion_started
+                    if first_frame is None and pipeline.meta['times']:first_frame=time.monotonic()-started
+                    t=progress.read();job.update(physicalTime=t,progress=min(.96,t/config.duration*.96))
                     job.update(elapsed=round(elapsed,2),previewFrames=len(pipeline.meta['times']))
-                    self._persist(ident,folder)
+                    if status_deadline.due(elapsed):self._persist(ident,folder)
                 if tree:
                     if self.stop_event.is_set(): tree.terminate()
                     tree.wait()
+                solver_elapsed=time.monotonic()-started
             if self.stop_event.is_set():
                 job.update(status='cancelled',error=None);return
             logs=(folder/'solver.log').read_text(errors='replace')
@@ -157,12 +165,15 @@ class Engine:
             if output.exists(): logs+='\n'+output.read_text(errors='replace')
             if not tree or tree.poll()!=0 or 'STOP: FDS completed successfully' not in logs: raise RuntimeError(logs[-5000:])
             job.update(status='converting',progress=.97)
-            pipeline.drain(time.monotonic()-started,final=True,stop=self.stop_event)
+            conversion_started=time.monotonic();pipeline.drain(time.monotonic()-started,final=True,stop=self.stop_event);conversion+=time.monotonic()-conversion_started
             with self.lock:
                 if self.stop_event.is_set(): job.update(status='cancelled',error=None);return
-                meta=pipeline.finish(time.monotonic()-started)
+                conversion_started=time.monotonic();meta=pipeline.finish(time.monotonic()-started);conversion+=time.monotonic()-conversion_started
+                meta.update(solverSeconds=solver_elapsed,conversionSeconds=conversion,firstFrameSeconds=first_frame,
+                            backendIO=dict(outputBytesRead=progress.tail.bytes_read,hrrBytesRead=pipeline.series_reader.tail.bytes_read,deviceBytesRead=pipeline.device_reader.tail.bytes_read))
                 meta['telemetry']=tree.telemetry()
                 meta['telemetry']['observedProcessAffinity']=affinity
+                meta['telemetry']['observedThreadAffinity']=threads
                 # Final frames reuse the immutable preview files, not another copy.
                 meta['frameDirectory']='preview/frames'
                 atomic_json(folder/'result.json',meta)

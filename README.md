@@ -54,9 +54,11 @@ Lokalny serwer nasłuchuje wyłącznie na 127.0.0.1. Nie ma kont, publikacji ani
 
 Podgląd deweloperski: uruchom `.venv\Scripts\python -m uvicorn backend.app:app --host 127.0.0.1 --port 8765` i w drugim terminalu `npm run dev`. Vite przekazuje `/api` do serwera. Pakiet produkcyjny powstaje w `dist/`.
 
-Opcjonalnie `IGNIS_FDS` wskazuje własny plik wykonywalny FDS 6.11.1. `IGNIS_SOLVER` przyjmuje `auto` (domyślnie), `openmp`, `mpi2`, `mpi4`. Automatyczny wybór MPI wymaga lokalnego, pozytywnego raportu zgodności oraz co najmniej 5% oszczędności mediany czasu dla dokładnie tych parametrów, czasu i siatki na tym komputerze. Bez takiego wpisu tryb `auto` zawsze używa OpenMP 4. `IGNIS_THREADS` ustawia 1–16 wątków tylko przy wymuszonym `IGNIS_SOLVER=openmp`; przy 1 używany jest wariant bez OpenMP. MPI używa jednego wątku na proces i podziału w osi Z. Brak binariów wymuszonego wariantu powoduje błąd zamiast cichej zamiany.
+Opcjonalnie `IGNIS_FDS` wskazuje własny plik wykonywalny FDS 6.11.1. `IGNIS_SOLVER` przyjmuje `auto` (domyślnie), `openmp`, `mpi2`, `mpi4` oraz nowe warianty opisane w [execution-v3](docs/execution-v3.md): np. `mpi2-x2`, `mpi4-y4`, `mpi4-xy22`, `mpi2-z13`, `hybrid2x2-z`. Profil zawiera podział siatek, hashe binariów i bibliotek, liczbę procesów/wątków oraz ewentualne affinity. Brak wymuszonego wariantu powoduje czytelny błąd. `IGNIS_THREADS` ustawia 1–16 wątków w wymuszonym OpenMP; automatyka pozostaje przy 4.
 
-`OMP_PLACES=cores` i `OMP_PROC_BIND=close` nie gwarantują wyboru rdzeni Performance. Runner mierzy maski affinity procesów FDS/MPI; nie deklarujemy przypięcia wyłącznie do P-cores. `IGNIS_TIMEOUT` ustawia limit obliczeń w sekundach (domyślnie 7200). Solver nie korzysta z GPU; RTX służy renderowaniu. Jednocześnie aplikacja lub benchmark wykonuje jeden eksperyment, zabezpieczony wspólną blokadą. Na Windows proces jest tworzony wstrzymany, przypisywany do Job Object, dopiero potem wznawiany. Zamknięcie serwera lub anulowanie zatrzymuje całe drzewo procesów.
+**Walidacja v3 oczekuje na przegląd nowych progów. `auto` używa OpenMP 4, także dla świecy.** Historyczne kwalifikacje nie są przenoszone. [Ponowna analiza 105 par](docs/validation-v3.md) dodaje chwilowy błąd czasowo-przestrzenny, zmienność i rzeczywiste granice siatek. Nowe przebiegi zawierają natywne strumienie masy/entalpii, promieniowanie, ciśnienie i dywergencję. Promocja wymaga osobno zatwierdzonej polityki, wszystkich porównań z trzema referencjami oraz co najmniej 5% poprawy mediany. Rodziny parametrów mają własną, wielopunktową kwalifikację; `fine` wymaga oddzielnych badań.
+
+`OMP_PLACES=cores` i `OMP_PROC_BIND=close` nie gwarantują wyboru rdzeni Performance. Warianty badawcze `-pcores` korzystają z topologii Windows i maski Job Object; telemetria sprawdza faktyczne affinity procesów oraz wątków. `IGNIS_TIMEOUT` ustawia limit obliczeń w sekundach (domyślnie 7200). Solver nie korzysta z GPU; RTX służy renderowaniu. Jednocześnie aplikacja lub benchmark wykonuje jeden eksperyment, zabezpieczony wspólną blokadą, także przy izolowanych serwerach API. Na Windows proces jest tworzony wstrzymany, przypisywany do Job Object, dopiero potem wznawiany. Zamknięcie serwera lub anulowanie zatrzymuje całe drzewo procesów.
 
 ## Testy
 
@@ -74,9 +76,21 @@ Pełny, wznawialny benchmark (60 przebiegów: rozgrzewka i trzy pomiary dla pię
 .\.venv\Scripts\python scripts/benchmark.py
 ```
 
-Obejmuje palnik i świecę po 2 i 6 sekund oraz drewno 15 sekund na siatce podglądowej. `--quality fine` wykonuje osobną serię; wyników podglądu nie przenosi się na dokładniejszą siatkę. Można ograniczyć serię przez `--scene burner --duration 6`. `--no-preview --output-json artifacts/benchmark-no-preview.json` mierzy narzut podglądu bez promowania profili produkcyjnych. Wszystkie ukończone pomiary i dane natywne są zachowywane; po przerwaniu skrypt kontynuuje brakujące próby. Raport JSON: `artifacts/benchmark-v2.json`; lokalne profile: `artifacts/validated-profiles.json`.
+Obejmuje palnik i świecę po 2 i 6 sekund oraz drewno 15 sekund na siatce podglądowej. `--quality fine` wykonuje osobną serię; wyników podglądu nie przenosi się na dokładniejszą siatkę. Można ograniczyć serię przez `--scene burner --duration 6`. `--no-preview --output-json artifacts/benchmark-no-preview.json` mierzy narzut podglądu bez promowania profili produkcyjnych. Nowe pomiary trafiają do `artifacts/benchmark-execution3.json`; historyczne `benchmark-v2.json` i 60 prób pozostają zachowane. Ten skrypt porównawczy nie wystawia kwalifikacji v3.
 
-`.\scripts\verify.ps1` wykonuje pełny benchmark, generuje przenośny raport `docs/benchmark-v2.md` i jego dane JSON, a następnie uruchamia testy Python, kompilację oraz Playwright (serwer na 8765 musi działać). Wynik zapisuje w `artifacts/verification-status.json`. Opcja `-AfterProcessId <PID>` pozwala poczekać na już uruchomiony benchmark i aktualizować raport podczas pomiarów. Negatywna bramka zgodności MPI oznacza pozostawienie OpenMP; nie jest ukrywana jako pozytywna walidacja.
+Nowa kampania z limitem 8 h / 4 GiB, archiwizacją bezstratną, walidacją wszystkich referencji i badaniem dekompozycji:
+
+```powershell
+.venv/Scripts/python scripts/campaign_v3.py --hours 8 --gib 4
+.venv/Scripts/python scripts/analyze_v3.py  # ponowna analiza zachowanych danych v2
+.\scripts\verify_v3.ps1                  # Python, build, Playwright
+```
+
+[Instrukcja badań execution-v3](docs/execution-v3.md) opisuje wznowienie kampanii, pomiar pełnego API, histogramy kroków, osobne budżety rodzin parametrów i kontrolę środowiska własnych kompilacji. Wynik screeningu nie jest produkcyjnym przyspieszeniem.
+
+[Weryfikacja implementacji v3](docs/verification-v3.md) oddziela wykonane testy aplikacji i transportu od trwających badań zgodności oraz niewykonanych jeszcze kampanii.
+
+Starszy `verify.ps1` przekierowuje do testów v3; `-AfterProcessId <PID>` pozwala najpierw poczekać na istniejący proces. Raporty `docs/benchmark-v2.md` i `benchmark-v2-data.json` są historycznymi dowodami 60 prób i nie poświadczają nowych profili. Negatywna bramka zgodności MPI oznacza pozostawienie OpenMP; nie jest ukrywana jako pozytywna walidacja.
 
 Obliczenie przypadku z terminala:
 

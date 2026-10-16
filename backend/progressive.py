@@ -1,6 +1,5 @@
 """Incremental SLCF reader. One pending record per field/mesh, no history reload."""
 import json
-import csv
 from pathlib import Path
 import struct
 import time
@@ -8,7 +7,7 @@ import numpy as np
 import fdsreader
 from .models import geometry, MODEL_VERSION, SOLVER_VERSION
 from .profiles import TRANSPORT_VERSION
-from .converter import CHANNELS, csv_table
+from .converter import CHANNELS
 
 QUANTITIES=['TEMPERATURE','HRRPUV','SOOT DENSITY','OXYGEN VOLUME FRACTION','U-VELOCITY','V-VELOCITY','W-VELOCITY']
 # SMV TRN node coordinates are printed to five decimal places in metres.
@@ -28,22 +27,6 @@ def atomic_json(path,data):
         except PermissionError:
             if attempt==19:raise
             time.sleep(.025)
-
-def partial_csv(path):
-    if not path.exists(): return {}
-    text=path.read_text(errors='replace')
-    # A writer may currently be midway through the last row.
-    text=text[:text.rfind('\n')+1];rows=list(csv.reader(text.splitlines()))
-    if len(rows)<3:return {}
-    names=[x.strip().strip('"') for x in rows[1]];values=[]
-    for row in rows[2:]:
-        if len(row)!=len(names):break
-        try: record=[float(x) for x in row]
-        except ValueError:break
-        if not np.isfinite(record).all():raise ValueError('Niefinitywne dane CSV.')
-        values.append(record)
-    if not values:return {}
-    return {name:[r[i] for r in values] for i,name in enumerate(names)}
 
 class SliceStream:
     def __init__(self,path,shape):
@@ -78,17 +61,27 @@ class ProgressiveConverter:
     def __init__(self,folder,config,profile,ident,attempt):
         self.folder=Path(folder); self.config=config; self.profile=profile
         self.streams=None; self.sim=None
+        from .incremental import CSVSeries
+        self.series_reader=CSVSeries(self.folder/'ignis_hrr.csv');self.device_reader=CSVSeries(self.folder/'ignis_devc.csv')
+        self.published_token=None
         bounds,cells=geometry(config)
         coords={a:(np.linspace(bounds[i*2],bounds[i*2+1],cells[i]+1)[:-1]+(bounds[i*2+1]-bounds[i*2])/cells[i]/2).tolist() for i,a in enumerate('xyz')}
         self.meta=dict(id=ident,attempt=attempt,config=config.canonical(),profile=profile.identity(),solver='FDS '+SOLVER_VERSION,
                        model=MODEL_VERSION,transport=TRANSPORT_VERSION,dimensions=list(cells),coordinates=coords,times=[],extrema=[],channels=CHANNELS,
                        elapsed=0,series={},devices={},source='FDS cell-centered 3D slices; float32',solidBounds=[],revision=0,complete=False,status='running',
                        rendering='Rekonstrukcja emisji i absorpcji; kolor nie jest pomiarem temperatury.')
+        from .meshes import partition
+        layout=getattr(profile,'layout','single' if profile.ranks==1 else f'z{profile.ranks}')
+        self.meta['meshLayout']=partition(cells,layout)
+        self.meta['diagnosticsRecipe']=getattr(profile,'diagnostics','none')
         (self.folder/'preview/frames').mkdir(parents=True,exist_ok=True)
         self.publish()
 
     def publish(self):
+        token=(self.meta['revision'],self.meta['status'],self.meta['complete'],len(self.meta.get('series',{}).get('Time',[])),len(self.meta.get('devices',{}).get('Time',[])))
+        if token==self.published_token:return
         atomic_json(self.folder/'preview/manifest.json',self.meta)
+        self.published_token=token
 
     def initialize(self,final=False):
         if self.streams is not None: return True
@@ -99,7 +92,7 @@ class ProgressiveConverter:
             selected=[next(s for s in sim.slices if s.quantity.name.upper()==q) for q in QUANTITIES]
             if any(len(s.subslices)!=self.profile.ranks for s in selected): return False
             streams=[]; dims=self.meta['dimensions']; coords=self.meta['coordinates']
-            covered=np.zeros(dims,dtype=np.uint8)
+            covered=np.zeros(tuple(dims)+(7,),dtype=np.uint8)
             for channel,s in enumerate(selected):
                 for sub in s.subslices:
                     nodes=sub.get_coordinates(ignore_cell_centered=True); starts=[]; ends=[]
@@ -113,7 +106,7 @@ class ProgressiveConverter:
                         if start<0 or end>dims[axis] or not np.allclose(nodes[a],expected,atol=tolerance,rtol=0):
                             raise MeshGeometryError(f'Niezgodna geometria podsiatki {sub.mesh.id}, oś {a}.')
                     region=tuple(slice(a,b) for a,b in zip(starts,ends))
-                    if channel==0: covered[region]+=1
+                    covered[region+(channel,)]+=1
                     streams.append((channel,region,SliceStream(self.folder/sub.filename,sub.dimension.shape(cell_centered=False))))
             if not np.all(covered==1): raise MeshGeometryError('Luki lub nakładające się siatki CFD.')
             self.sim=sim;self.streams=streams
@@ -148,7 +141,8 @@ class ProgressiveConverter:
             self.meta.update(revision=i+1,elapsed=elapsed)
             count+=1
         if count:
-            self.meta.update(series=partial_csv(self.folder/'ignis_hrr.csv'),devices=partial_csv(self.folder/'ignis_devc.csv'))
+            self.meta.update(series=self.series_reader.read(),devices=self.device_reader.read())
+            self.meta.update(seriesUnits=self.series_reader.units,deviceUnits=self.device_reader.units)
             self.publish()
         if final:
             if any(s.peek() is not None for _,_,s in self.streams): raise ValueError('Niekompletny zestaw końcowych pól FDS.')
@@ -158,6 +152,7 @@ class ProgressiveConverter:
     def finish(self,elapsed,status='completed'):
         self.meta.update(elapsed=elapsed,status=status,complete=status=='completed')
         if status=='completed':
-            self.meta.update(series=csv_table(self.folder/'ignis_hrr.csv'),devices=csv_table(self.folder/'ignis_devc.csv'))
+            self.meta.update(series=self.series_reader.read(),devices=self.device_reader.read())
+            self.meta.update(seriesUnits=self.series_reader.units,deviceUnits=self.device_reader.units)
         self.publish()
         return self.meta

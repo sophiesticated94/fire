@@ -57,6 +57,9 @@ class ProcessTree:
                 if self.api:
                     self.job=self.api.check(self.api.dll.CreateJobObjectW(None,None))
                     limits=ExtendedLimits(); limits.basic.flags=0x2000
+                    if env.get('IGNIS_CPU_MASK'):
+                        limits.basic.flags|=0x10;limits.basic.affinity=int(env['IGNIS_CPU_MASK'],0)
+                        if not limits.basic.affinity:raise ValueError('Empty requested CPU affinity')
                     self.api.check(self.api.dll.SetInformationJobObject(self.job,9,ctypes.byref(limits),ctypes.sizeof(limits)))
                     create=self.api.dll.CreateProcessW
                     create.argtypes=[w.LPCWSTR,w.LPWSTR,ctypes.c_void_p,ctypes.c_void_p,w.BOOL,w.DWORD,ctypes.c_void_p,w.LPCWSTR,ctypes.POINTER(StartupInfo),ctypes.POINTER(ProcessInfo)]
@@ -142,8 +145,9 @@ class ProcessTree:
                 if self.api.dll.GetProcessAffinityMask(handle,ctypes.byref(mask),ctypes.byref(system_mask)):process_affinity[str(pid)]=hex(mask.value)
             finally:self.api.check(self.api.dll.CloseHandle(handle))
         cpu=(ctypes.c_int64.from_buffer(accounting,0).value+ctypes.c_int64.from_buffer(accounting,8).value)/1e7
+        from .cpu import thread_affinities
         return dict(affinityMask=hex(affinity.value),processAffinity=process_affinity,peakMemoryBytes=limits.peak_job_memory,
-                    readBytes=io.read_bytes,writeBytes=io.write_bytes,cpuSeconds=cpu)
+                    readBytes=io.read_bytes,writeBytes=io.write_bytes,cpuSeconds=cpu,threadAffinity=thread_affinities(map(int,process_affinity)))
 
     def close(self):
         with self._lock:

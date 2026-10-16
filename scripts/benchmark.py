@@ -28,18 +28,22 @@ def parse_cpu_csv(path):
             except ValueError: pass
     return out
 
-def run(config,profile,root,timeout,preview=True):
-    attempt=uuid.uuid4().hex;folder=root/attempt;folder.mkdir(parents=True)
-    (folder/'ignis.fds').write_text(make_deck(config,profile.ranks),encoding='ascii')
+def run(config,profile,root,timeout,preview=True,attempt=None,on_progress=None):
+    attempt=attempt or uuid.uuid4().hex;folder=root/attempt;folder.mkdir(parents=True)
+    (folder/'ignis.fds').write_text(make_deck(config,profile.ranks,profile=profile,diagnostics=getattr(profile,'diagnostics','none')!='none'),encoding='ascii')
     pipe=ProgressiveConverter(folder,config,profile,config.key(profile),attempt)
-    tree=ProcessTree();started=time.perf_counter();conversion=0;first_frame=None;affinity={}
+    tree=ProcessTree();started=time.perf_counter();conversion=0;first_frame=None;affinity={};threads={}
+    from backend.incremental import Deadline
+    telemetry_deadline=Deadline(2);heartbeat=Deadline(1)
     try:
         with (folder/'solver.log').open('wb') as log:
             tree.start(profile.command(),folder,profile.environment(),log)
             while tree.poll() is None:
                 elapsed=time.perf_counter()-started
                 if elapsed>timeout: raise TimeoutError(f'Timeout {timeout} s')
-                if int(elapsed)%2==0:affinity.update(tree.telemetry().get('processAffinity',{}))
+                if on_progress and heartbeat.due(elapsed):on_progress(elapsed,folder)
+                if telemetry_deadline.due(elapsed):
+                    sample=tree.telemetry();affinity.update(sample.get('processAffinity',{}));threads.update(sample.get('threadAffinity',{}))
                 if preview:
                     before=time.perf_counter();pipe.drain(elapsed);conversion+=time.perf_counter()-before
                     if first_frame is None and pipe.meta['times']: first_frame=elapsed
@@ -51,6 +55,7 @@ def run(config,profile,root,timeout,preview=True):
             conversion+=time.perf_counter()-before
             meta.update(frameDirectory='preview/frames',telemetry=tree.telemetry())
             meta['telemetry']['observedProcessAffinity']=affinity
+            meta['telemetry']['observedThreadAffinity']=threads
             atomic_json(folder/'result.json',meta)
         total=time.perf_counter()-started
         verify_native(folder)
@@ -76,7 +81,7 @@ def main():
     parser.add_argument('--iterations',type=int,default=3)
     parser.add_argument('--timeout',type=float,default=7200)
     parser.add_argument('--modes',nargs='+',default=['openmp','mpi2','mpi4'])
-    parser.add_argument('--output-json',default='artifacts/benchmark-v2.json')
+    parser.add_argument('--output-json',default='artifacts/benchmark-execution3.json')
     parser.add_argument('--no-preview',action='store_true',help='Measure solver with progressive reading disabled')
     args=parser.parse_args();path=ROOT/args.output_json;path.parent.mkdir(parents=True,exist_ok=True)
     if args.iterations<3: parser.error('Wymagane minimum 3 pomiary po rozgrzewce.')
@@ -96,9 +101,9 @@ def main():
                 for iteration in range(args.iterations+1):
                     if any(r['iteration']==iteration for r in previous): continue
                     print(f'START {scene} {duration}s {mode} iteration={iteration}',flush=True)
-                    result=run(c,p,ROOT/'artifacts/benchmark-v2',args.timeout,not args.no_preview)
+                    result=run(c,p,ROOT/'artifacts/benchmark-execution3',args.timeout,not args.no_preview)
                     result.update(iteration=iteration,preview=not args.no_preview)
-                    report['runs'].append(result);atomic_json(path,report);render(path,ROOT/'docs/benchmark-v2.md')
+                    report['runs'].append(result);atomic_json(path,report);render(path,ROOT/'docs/benchmark-execution3.md')
                     print(f"DONE solver={result['solverSeconds']:.2f}s total={result['totalSeconds']:.2f}s frames exact",flush=True)
             signatures={mode:validation_signature(c,build_profile(exe,mode,threads=4)) for mode in args.modes}
             group=[r for r in report['runs'] if r['signature']==signatures.get(r['profile']['mode']) and r['iteration']>0 and r['preview']==(not args.no_preview)]
@@ -117,14 +122,9 @@ def main():
                 report['summaries']=[s for s in report['summaries'] if not (s['config']==c.canonical() and s['mode']==mode)]+[summary]
                 receipts.append(dict(signature=runs[0]['signature'],mode=mode,median=median,speedup=speedup,passed=summary['passed'],measuredRuns=len(runs)))
                 print('GATE',scene,duration,mode,'PASS' if summary['passed'] else 'FAIL',f'speedup={speedup:.3f}',flush=True)
-            # Only default pipeline measurements can promote production profiles.
-            if not args.no_preview:
-                entries=json.loads(REGISTRY.read_text()) if REGISTRY.exists() else []
-                signatures=[r['signature'] for r in receipts]
-                entries=[e for e in entries if e['signature'] not in signatures]+receipts
-                atomic_json(REGISTRY,entries)
+            # v3 receipts require the separately approved scientific policy.
             atomic_json(path,report)
-            render(path,ROOT/'docs/benchmark-v2.md')
+            render(path,ROOT/'docs/benchmark-execution3.md')
     finally: lease._release()
 
 if __name__=='__main__': main()

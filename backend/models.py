@@ -43,6 +43,9 @@ class Experiment(BaseModel):
         if profile is not None:
             from .profiles import TRANSPORT_VERSION
             payload.update(profile=profile.identity(),transport=TRANSPORT_VERSION)
+            if hasattr(profile,'layout'):
+                from .meshes import partition
+                payload['meshLayout']=partition(geometry(self)[1],profile.layout)
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
 
 
@@ -56,7 +59,7 @@ def geometry(c: Experiment):
     return [-size[0]/2, size[0]/2, -size[1]/2, size[1]/2, 0, size[2]], cells
 
 
-def make_deck(c: Experiment, ranks: int = 1) -> str:
+def make_deck(c: Experiment, ranks: int = 1, *, profile=None, diagnostics=False) -> str:
     bounds, cells = geometry(c)
     xb = ','.join(f'{n:.8f}' for n in bounds)
     # FDS background O2 mass fraction; replace O2 by N2 at fixed pressure.
@@ -64,10 +67,10 @@ def make_deck(c: Experiment, ranks: int = 1) -> str:
     yo = xo*31.998/(xo*31.998 + (1-xo)*28.014)
     out = [
         "&HEAD CHID='ignis', TITLE='IGNIS quantitative educational experiment' /",
-        *mesh_lines(bounds,cells,ranks),
+        *mesh_lines(bounds,cells,ranks,layout=getattr(profile,'layout','single' if ranks==1 else f'z{ranks}') if profile is not None else None),
         f"&TIME T_END={c.duration}, WALL_INCREMENT=20 /",
         f"&MISC TMPA={c.ambient}, Y_O2_INFTY={yo:.9f} /",
-        "&DUMP DT_DEVC=0.1, DT_HRR=0.1, DT_SLCF=0.1, DT_SL3D=0.1 /",
+        "&DUMP DT_DEVC=0.1, DT_HRR=0.1, DT_SLCF=0.1, DT_SL3D=0.1"+(", DIAGNOSTICS_INTERVAL=1" if getattr(profile,'diagnostics','')=='flux-1-allsteps' else '')+" /",
         "&RADI RADIATION=.TRUE., NUMBER_RADIATION_ANGLES=50 /",
         "&SPEC ID='OXYGEN' /",
         "&SPEC ID='NITROGEN' /",
@@ -130,6 +133,9 @@ def make_deck(c: Experiment, ranks: int = 1) -> str:
     for quantity, species in fields:
         extra = f", SPEC_ID='{species}'" if species else ''
         out.append(f"&SLCF XB={xb}, QUANTITY='{quantity}'{extra}, CELL_CENTERED=.TRUE. /")
+    if diagnostics:
+        from .diagnostics import diagnostic_lines
+        out.extend(diagnostic_lines(bounds,cells))
     out += [
         f"&DEVC ID='probe_T', XYZ=0.,0.,{bounds[5]*0.45}, QUANTITY='TEMPERATURE' /",
         f"&DEVC ID='probe_O2', XYZ=0.,0.,{bounds[5]*0.45}, QUANTITY='VOLUME FRACTION', SPEC_ID='OXYGEN' /",
@@ -138,7 +144,10 @@ def make_deck(c: Experiment, ranks: int = 1) -> str:
     return '\n'.join(out)+'\n'
 
 
-def mesh_lines(bounds,cells,ranks=1):
+def mesh_lines(bounds,cells,ranks=1,layout=None):
+    if layout is not None and layout!='single':
+        from .meshes import mesh_records
+        return [f"&MESH ID='M{i+1}', IJK={','.join(map(str,r['cells']))}, XB={','.join(f'{n:.8f}' for n in r['bounds'])}, MPI_PROCESS={r['process']} /" for i,r in enumerate(mesh_records(bounds,cells,layout))]
     if ranks not in (1,2,4) or cells[2]%ranks:
         raise ValueError('Nieprawidłowy podział siatki MPI.')
     if ranks==1:

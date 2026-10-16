@@ -44,10 +44,10 @@ def compare(reference,candidate):
     metrics=errors(a,b)
     ranks=c.get('profile',{}).get('ranks',1);interface=[]
     if ranks>1:
-        planes=[]
-        for i in range(1,ranks):
-            k=c['dimensions'][2]*i//ranks;planes.extend([k-1,k])
-        interface=errors(a[planes],b[planes])
+        from .meshes import interface_mask
+        layout=c.get('profile',{}).get('layout',f'z{ranks}')
+        mask=interface_mask(c['dimensions'],layout)
+        interface=errors(a[mask],b[mask])
     def energy(m): return float(np.trapezoid(m['series']['HRR'],m['series']['Time']))
     er,ec=energy(r),energy(c);energy_error=abs(er-ec)/max(abs(er),1e-6)
     ir,ic=ignition(r),ignition(c)
