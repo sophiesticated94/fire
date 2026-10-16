@@ -2,6 +2,8 @@
 
 Lokalna aplikacja po polsku: świeca, palnik metanowy i piroliza drewna. Rzeczywisty **NIST FDS 6.11.1** oblicza pola przestrzenne, a Three.js rekonstruuje płomień, dym i warstwy pomiarowe. Obliczenia i odtwarzanie wyników są rozdzielone.
 
+**IGNIS 1.3:** przełącznik **GPU Interactive** otwiera osobny solver 3D gorącego powietrza na WebGPU. Grzałka i wiatr zmieniają przepływ podczas obliczeń; dostępne są temperatura, prędkość, gęstość i sonda. Ten etap nie obejmuje jeszcze spalania GPU. FDS zachowuje dotychczasową fizykę i wyniki. [Model, obsługa i testy GPU](docs/gpu-flow-0.1.md) · [Pomiary i odbiór](docs/benchmark-gpu-1.3.md).
+
 ## Uruchomienie
 
 W PowerShell, w folderze projektu:
@@ -58,7 +60,7 @@ Opcjonalnie `IGNIS_FDS` wskazuje własny plik wykonywalny FDS 6.11.1. `IGNIS_SOL
 
 **Walidacja v3 oczekuje na przegląd nowych progów. `auto` używa OpenMP 4, także dla świecy.** Historyczne kwalifikacje nie są przenoszone. [Ponowna analiza 105 par](docs/validation-v3.md) dodaje chwilowy błąd czasowo-przestrzenny, zmienność i rzeczywiste granice siatek. Nowe przebiegi zawierają natywne strumienie masy/entalpii, promieniowanie, ciśnienie i dywergencję. Promocja wymaga osobno zatwierdzonej polityki, wszystkich porównań z trzema referencjami oraz co najmniej 5% poprawy mediany. Rodziny parametrów mają własną, wielopunktową kwalifikację; `fine` wymaga oddzielnych badań.
 
-`OMP_PLACES=cores` i `OMP_PROC_BIND=close` nie gwarantują wyboru rdzeni Performance. Warianty badawcze `-pcores` korzystają z topologii Windows i maski Job Object; telemetria sprawdza faktyczne affinity procesów oraz wątków. `IGNIS_TIMEOUT` ustawia limit obliczeń w sekundach (domyślnie 7200). Solver nie korzysta z GPU; RTX służy renderowaniu. Jednocześnie aplikacja lub benchmark wykonuje jeden eksperyment, zabezpieczony wspólną blokadą, także przy izolowanych serwerach API. Na Windows proces jest tworzony wstrzymany, przypisywany do Job Object, dopiero potem wznawiany. Zamknięcie serwera lub anulowanie zatrzymuje całe drzewo procesów.
+`OMP_PLACES=cores` i `OMP_PROC_BIND=close` nie gwarantują wyboru rdzeni Performance. Warianty badawcze `-pcores` korzystają z topologii Windows i maski Job Object; telemetria sprawdza faktyczne affinity procesów oraz wątków. `IGNIS_TIMEOUT` ustawia limit obliczeń w sekundach (domyślnie 7200). Solver FDS nie korzysta z GPU. Osobny model GPU Interactive wykonuje obliczenia i renderowanie na adapterze wybranym przez przeglądarkę. Jednocześnie aplikacja lub benchmark wykonuje jeden eksperyment, zabezpieczony wspólną blokadą, także przy izolowanych serwerach API. Na Windows proces jest tworzony wstrzymany, przypisywany do Job Object, dopiero potem wznawiany. Zamknięcie serwera lub anulowanie zatrzymuje całe drzewo procesów.
 
 ## Testy
 
@@ -66,6 +68,8 @@ Opcjonalnie `IGNIS_FDS` wskazuje własny plik wykonywalny FDS 6.11.1. `IGNIS_SOL
 .\.venv\Scripts\python -m pytest tests -q
 npm run build
 npm run test:e2e  # przy uruchomionym serwerze na porcie 8765
+npm run test:gpu  # Edge + dostępny adapter WebGPU
+npm run test:gpu:benchmark  # długi test stabilności i pomiary; sekwencyjnie
 ```
 
 Jeśli Chromium Playwright nie jest dostępny: `npx playwright install chromium`. Zrzuty są zapisywane w ignorowanym `artifacts/`.

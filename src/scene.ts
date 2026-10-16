@@ -116,8 +116,10 @@ export class FireScene {
     let downX=0,downY=0;
     this.renderer.domElement.addEventListener('pointerdown',e=>{downX=e.clientX;downY=e.clientY});
     this.renderer.domElement.addEventListener('pointerup',e=>{if(Math.hypot(e.clientX-downX,e.clientY-downY)<4)this.pick(e)});
-    this.renderer.setAnimationLoop(()=>{if(!this.disposed){this.controls.update();this.volume.material.uniforms.localCamera.value.copy(this.volume.worldToLocal(this.camera.position.clone()));this.composer.render()}});
+    this.renderer.setAnimationLoop(()=>{if(!this.disposed&&this.active&&!document.hidden){this.controls.update();this.volume.material.uniforms.localCamera.value.copy(this.volume.worldToLocal(this.camera.position.clone()));this.composer.render()}});
   }
+  private active=true;
+  setActive(value:boolean){this.active=value;this.controls.enabled=value;}
   makeTexture(data:Float32Array,dims:[number,number,number]){
     const tex=new THREE.Data3DTexture(data,...dims);tex.format=THREE.RGBAFormat;tex.type=THREE.FloatType;
     tex.minFilter=THREE.LinearFilter;tex.magFilter=THREE.LinearFilter;tex.unpackAlignment=1;tex.needsUpdate=true;return tex;

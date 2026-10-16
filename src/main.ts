@@ -21,6 +21,7 @@ let layer:Layer='fire',playing=true,playTime=0,currentIndex=-1,loadingFrame=fals
 let lastStatus='',pollHandle:number|undefined,frameAbort:AbortController|undefined;
 const cache=new Map<number,Float32Array>();
 let fire:FireScene|undefined;
+let gpuActive=false,gpuLab:import('./gpu/GpuLaboratory').GpuLaboratory|undefined,gpuInitializing=false;
 let ignited=true,playbackMode:'continuous'|'physical'='continuous',direction=1;
 let burnWindow:[number,number]|undefined,previewResult:Result|undefined,savedResult:{id:string;time:number}|undefined;
 
@@ -69,6 +70,19 @@ $('#app').innerHTML=`
 </main>
 <dialog id="details"><button class="dialog-close icon-button" aria-label="Zamknij">${icon('close')}</button><div class="eyebrow">ZA ŚWIATŁEM KRYJE SIĘ FIZYKA</div><h2>Czym jest ogień?</h2><p>Ogień to zjawisko towarzyszące spalaniu: reakcjom chemicznym, które uwalniają energię. Płomień jest obszarem gorących, reagujących gazów. Zwykły płomień jest słabo zjonizowany i nie należy utożsamiać go z silnie zjonizowaną plazmą.</p><div class="equation" id="equation"></div><h3>Co jest obliczane?</h3><p>FDS rozwiązuje przestrzenny przepływ o małych prędkościach oraz transport ciepła i składników. Odczyty pochodzą z komórek siatki. Spalanie i promieniowanie korzystają z modeli przybliżonych. Sama obecność CFD nie gwarantuje dokładności pomiarowej.</p><p id="scene-limitations"></p><h3>Światło i kolor</h3><p>Wizualizacja objętościowa rekonstruuje światło z wydzielania ciepła, temperatury i sadzy. Niebieska barwa jest ilustracją emisji; szczegółowa chemiluminescencja nie jest obliczana. Kolor płomienia nie służy jako termometr.</p><h3>Dane i powtarzalność</h3><p id="result-details">Wybierz obliczony eksperyment.</p><div class="dialog-links"><a href="https://pages.nist.gov/fds/manuals.html" target="_blank" rel="noreferrer">Dokumentacja NIST FDS ↗</a><a href="https://github.com/firemodels/fds/blob/FDS-6.11.1/Verification/Pyrolysis/surf_mass_part_char_cart_fuel.fds" target="_blank" rel="noreferrer">Źródło modelu materiału ↗</a><a id="download-input" hidden>Pobierz wejście FDS ↓</a></div></dialog>
 `;
+
+// Separate cached rendering engines retain their own camera and physical time.
+const engineSwitch=document.createElement('div');engineSwitch.className='engine-switch';engineSwitch.setAttribute('aria-label','Silnik demonstracji');
+engineSwitch.innerHTML='<button id="mode-fds" aria-pressed="true">FDS Scientific</button><button id="mode-gpu" aria-pressed="false">GPU Interactive <small>1.3</small></button>';
+$('.workspace').before(engineSwitch);const gpuRoot=document.createElement('section');gpuRoot.id='gpu-laboratory';gpuRoot.hidden=true;$('.workspace').after(gpuRoot);
+const gpuEngineLabel=document.createElement('span');gpuEngineLabel.id='gpu-engine-label';gpuEngineLabel.textContent='GPU Interactive · gpu-flow-0.1';$('#engine-label').after(gpuEngineLabel);
+async function switchEngine(value:boolean){
+ gpuActive=value;document.body.classList.toggle('gpu-mode',value);gpuRoot.hidden=!value;fire?.setActive(!value);lastTick=performance.now();
+ $('#mode-fds').setAttribute('aria-pressed',String(!value));$('#mode-gpu').setAttribute('aria-pressed',String(value));gpuLab?.activate(value);
+ if(value&&!gpuLab&&!gpuInitializing){gpuInitializing=true;try{const {GpuLaboratory}=await import('./gpu/GpuLaboratory');gpuLab=new GpuLaboratory(gpuRoot);gpuLab.activate(gpuActive);await gpuLab.initialize();}catch(e){gpuRoot.textContent='Nie można uruchomić modułu GPU: '+(e as Error).message;}finally{gpuInitializing=false;}}
+ if(!value)fire?.resize();
+}
+$('#mode-fds').onclick=()=>void switchEngine(false);$('#mode-gpu').onclick=()=>void switchEngine(true);
 
 const definitions:Record<string,{label:string;min:number;max:number;step:number;unit:string;digits?:number;help:string}>={
   fuel:{label:'Dopływ paliwa',min:0,max:30,step:.2,unit:'mg/s',help:'Zadany strumień masy paliwa na wylocie.'},
@@ -248,12 +262,12 @@ $('#rewind').addEventListener('click',()=>{playbackMode='physical';$<HTMLSelectE
 $('#speed').addEventListener('change',e=>{speed=Number((e.target as HTMLSelectElement).value)});
 $('#timeline').addEventListener('input',e=>{playing=false;playbackMode='physical';$<HTMLSelectElement>('#playback-mode').value='physical';updatePlayButton();playTime=Number((e.target as HTMLInputElement).value);void showFrame(nearestTime(playTime))});
 $('#presentation').addEventListener('click',()=>{document.body.classList.toggle('presenting');fire?.resize()});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')document.body.classList.remove('presenting');if(e.code==='Space'&&!['INPUT','SELECT','BUTTON','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!$<HTMLDialogElement>('#details').open){e.preventDefault();togglePlayback()}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.body.classList.remove('presenting');if(e.code==='Space'&&!['INPUT','SELECT','BUTTON','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!$<HTMLDialogElement>('#details').open){e.preventDefault();gpuActive?gpuLab?.toggle():togglePlayback()}});
 for(const id of ['about','sources','explain'])$(`#${id}`).addEventListener('click',openDetails);
 $('.dialog-close').addEventListener('click',()=>$<HTMLDialogElement>('#details').close());
 $<HTMLDialogElement>('#details').addEventListener('click',e=>{if(e.target===$('#details'))$<HTMLDialogElement>('#details').close()});
 document.addEventListener('visibilitychange',()=>{lastTick=performance.now()});
-window.addEventListener('beforeunload',()=>fire?.dispose());
+window.addEventListener('beforeunload',()=>{fire?.dispose();gpuLab?.dispose()});
 
 renderControls();updateLearning();
 try{
@@ -267,5 +281,5 @@ try{
 
 async function init(){try{const health=await api<{solverAvailable:boolean;active:string|null}>('/health');$('#engine-label').textContent=health.solverAvailable?'FDS 6.11.1 · lokalnie':'FDS · wymaga przygotowania';if(!health.solverAvailable)showError('Brak lokalnego solvera. Uruchom scripts/setup.ps1.');await refreshHistory();await chooseScene('burner');if(health.active){pendingJobId=health.active;startPolling()}}catch(e){$('#engine-label').textContent='Serwer obliczeń jest wyłączony';$('#empty-message').textContent='Uruchom start.ps1, aby otworzyć laboratorium.';showError((e as Error).message)}}
 void init();
-function tick(now:number){const delta=Math.min((now-lastTick)/1000,.1);lastTick=now;if(result&&!document.hidden){if(playing&&currentIndex>=0){const end=result.times.at(-1)??0;if(result.complete===false){playTime=Math.min(end,playTime+delta*speed)}else if(playbackMode==='continuous'&&burnWindow){const next=bounce(playTime,delta*speed,direction,burnWindow);playTime=next.time;direction=next.direction}else{playTime=Math.min(end,playTime+delta*speed);if(playTime>=end){playing=false;updatePlayButton()}}}const i=nearestTime(playTime);if(i!==currentIndex)void showFrame(i);$('#current-time').textContent=format(result.times[currentIndex]??0,2);if(!loadingFrame)$<HTMLInputElement>('#timeline').value=String(result.times[currentIndex]??0)}requestAnimationFrame(tick)}
+function tick(now:number){const delta=Math.min((now-lastTick)/1000,.1);lastTick=now;if(result&&!document.hidden&&!gpuActive){if(playing&&currentIndex>=0){const end=result.times.at(-1)??0;if(result.complete===false){playTime=Math.min(end,playTime+delta*speed)}else if(playbackMode==='continuous'&&burnWindow){const next=bounce(playTime,delta*speed,direction,burnWindow);playTime=next.time;direction=next.direction}else{playTime=Math.min(end,playTime+delta*speed);if(playTime>=end){playing=false;updatePlayButton()}}}const i=nearestTime(playTime);if(i!==currentIndex)void showFrame(i);$('#current-time').textContent=format(result.times[currentIndex]??0,2);if(!loadingFrame)$<HTMLInputElement>('#timeline').value=String(result.times[currentIndex]??0)}requestAnimationFrame(tick)}
 requestAnimationFrame(tick);
