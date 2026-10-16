@@ -1,203 +1,213 @@
 from __future__ import annotations
-import json
 import atexit
+import json
 import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import threading
 import time
-from .models import Experiment, make_deck
-from .converter import convert
-from .solver_config import WindowsJobObject, get_solver_env, get_solver_command
+import uuid
+from .models import Experiment,make_deck
+from .profiles import resolve_profile
+from .runner import ProcessTree
+from .progressive import ProgressiveConverter,atomic_json
 
-ROOT = Path(__file__).resolve().parent.parent
-RUNS = ROOT/'runs'
-SAMPLES = ROOT/'samples'
-
+ROOT=Path(__file__).resolve().parent.parent
+RUNS=ROOT/'runs'
+SAMPLES=ROOT/'samples'
 
 def solver_path():
-    choices = [os.environ.get('IGNIS_FDS',''), ROOT/'tools/fds/firemodels/FDS6/bin/fds_openmp.exe', Path('C:/Program Files/firemodels/FDS6/bin/fds_openmp.exe')]
+    choices=[os.environ.get('IGNIS_FDS',''),ROOT/'tools/fds/firemodels/FDS6/bin/fds_openmp.exe',Path('C:/Program Files/firemodels/FDS6/bin/fds_openmp.exe')]
     for p in choices:
-        if p and Path(p).is_file():
-            return Path(p).resolve()
-    found = shutil.which('fds_openmp') or shutil.which('fds')
-    return Path(found) if found else None
+        if p and Path(p).is_file(): return Path(p).resolve()
+    found=shutil.which('fds_openmp') or shutil.which('fds')
+    return Path(found).resolve() if found else None
 
-
-def solver_env(exe: Path):
-    return get_solver_env(exe)
-
+def solver_env(exe):
+    from .profiles import build_profile
+    return build_profile(exe).environment()
 
 class Engine:
     def __init__(self):
         RUNS.mkdir(exist_ok=True)
-        self.lock = threading.Lock()
-        self.active = None
-        self.jobs = {}
-        self.process = None
-        self.job_object = None
-        self.stop_event = threading.Event()
-        self.started = 0
-        self.lease = None
+        self.lock=threading.RLock();self.active=None;self.jobs={};self.process=None
+        self.stop_event=threading.Event();self.lease=None;self.worker=None
         atexit.register(self.shutdown)
 
     def _lease(self):
-        handle = (RUNS/'.solver.lock').open('a+b')
-        handle.seek(0,2)
-        if handle.tell()==0: handle.write(b'0'); handle.flush()
+        handle=(RUNS/'.solver.lock').open('a+b');handle.seek(0,2)
+        if handle.tell()==0: handle.write(b'0');handle.flush()
         handle.seek(0)
         try:
-            if os.name == 'nt':
+            if os.name=='nt':
                 import msvcrt
                 msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
             else:
                 import fcntl
                 fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except OSError:
-            handle.close()
-            raise RuntimeError('Inny proces IGNIS oblicza eksperyment. Poczekaj na jego zakończenie.')
-        self.lease = handle
+            handle.close();raise RuntimeError('Inny proces IGNIS oblicza eksperyment.')
+        self.lease=handle
 
     def _release(self):
-        if self.lease:
-            self.lease.close()
-            self.lease = None
+        if self.lease: self.lease.close();self.lease=None
 
-    def folder(self, ident):
-        if not re.fullmatch(r'[a-f0-9]{20}', ident):
-            raise KeyError('Nieprawidłowy identyfikator')
+    def folder(self,ident,attempt=None):
+        if not re.fullmatch(r'[a-f0-9]{20}',ident): raise KeyError('Nieprawidłowy identyfikator')
+        if attempt is not None:
+            if not re.fullmatch(r'[a-f0-9]{32}',attempt): raise KeyError('Nieprawidłowa próba')
+            p=RUNS/ident/'attempts'/attempt
+            if p.is_dir(): return p
+            raise KeyError('Nie znaleziono próby')
         for base in (SAMPLES,RUNS):
-            p = base/ident
-            if p.is_dir():
-                if base==SAMPLES and not (p/'result.json').exists(): continue
-                return p
+            p=base/ident
+            if not p.is_dir(): continue
+            pointer=p/'latest.json'
+            if pointer.exists():
+                return self.folder(ident,json.loads(pointer.read_text())['attempt'])
+            if base==SAMPLES and not (p/'result.json').exists(): continue
+            return p
         raise KeyError('Nie znaleziono eksperymentu')
 
-    def status(self, ident):
-        if ident in self.jobs:
-            return dict(self.jobs[ident])
-        folder = self.folder(ident)
+    def status(self,ident):
+        with self.lock:
+            if ident in self.jobs: return dict(self.jobs[ident])
+        folder=self.folder(ident)
         if (folder/'result.json').exists():
-            return {'id':ident,'status':'completed','progress':1,'cached':True}
-        return {'id':ident,'status':'interrupted','progress':0,'error':'Obliczenia przerwano. Uruchom ponownie.'}
+            meta=json.loads((folder/'result.json').read_text(encoding='utf-8'))
+            return dict(id=ident,status='completed',progress=1,cached=True,
+                        profile=meta.get('profile'),attempt=meta.get('attempt'),config=meta['config'],
+                        duration=meta['config']['duration'],physicalTime=meta['config']['duration'],
+                        elapsed=meta.get('elapsed'),previewFrames=len(meta.get('times',[])))
+        stored=folder/'job.json'
+        previous=json.loads(stored.read_text(encoding='utf-8')) if stored.exists() else {'id':ident}
+        if previous.get('status') not in ('cancelled','failed'):
+            previous.update(status='interrupted',error='Obliczenia przerwano. Uruchom ponownie.')
+        return previous
 
-    def create(self, config: Experiment):
-        ident = config.key()
+    def _persist(self,ident,folder):
+        atomic_json(folder/'job.json',self.jobs[ident])
+
+    def create(self,config:Experiment):
         with self.lock:
+            exe=solver_path()
+            if not exe: raise FileNotFoundError('Brak FDS 6.11.1. Uruchom scripts/setup.ps1.')
+            profile=resolve_profile(exe,config);ident=config.key(profile)
             try:
-                folder = self.folder(ident)
-                if (folder/'result.json').exists():
-                    return {'id':ident,'status':'completed','progress':1,'cached':True}
-            except KeyError:
-                pass
-            if self.active:
-                raise RuntimeError('Inny eksperyment jest już obliczany.')
-            exe = solver_path()
-            if not exe:
-                raise FileNotFoundError('Brak FDS 6.11.1. Uruchom scripts/setup.ps1.')
+                folder=self.folder(ident)
+                if (folder/'result.json').exists(): return dict(id=ident,status='completed',progress=1,cached=True,profile=profile.identity())
+            except KeyError: pass
+            if self.active: raise RuntimeError('Inny eksperyment jest już obliczany.')
             self._lease()
-            folder = RUNS/ident
             try:
-                folder.mkdir(exist_ok=True)
-                # A retry starts clean: only remove artifacts in this exact job.
-                for item in folder.iterdir():
-                    if item.is_file() or item.is_symlink(): item.unlink()
-                    elif item.is_dir(): shutil.rmtree(item, ignore_errors=True)
-                (folder/'ignis.fds').write_text(make_deck(config),encoding='ascii')
-                (folder/'config.json').write_text(json.dumps(config.canonical()),encoding='utf-8')
-            except Exception:
-                self._release()
+                attempt=uuid.uuid4().hex;root=RUNS/ident;folder=root/'attempts'/attempt;folder.mkdir(parents=True)
+                (folder/'ignis.fds').write_text(make_deck(config,profile.ranks),encoding='ascii')
+                atomic_json(folder/'config.json',config.canonical())
+                atomic_json(root/'latest.json',{'attempt':attempt})
+                self.jobs[ident]=dict(id=ident,attempt=attempt,status='running',progress=0,physicalTime=0,duration=config.duration,config=config.canonical(),profile=profile.identity())
+                self.active=ident;self.stop_event.clear();self._persist(ident,folder)
+                self.worker=threading.Thread(target=self._run,args=(ident,config,profile,folder),daemon=True)
+                self.worker.start()
+            except BaseException:
+                self.active=None;self.worker=None;self._release()
+                if ident in self.jobs:
+                    self.jobs[ident].update(status='failed',error='Nie udało się uruchomić zadania.')
+                    self._persist(ident,folder)
                 raise
-            self.jobs[ident] = {'id':ident,'status':'running','progress':0,'physicalTime':0,'duration':config.duration,'config':config.canonical()}
-            self.active = ident
-            self.stop_event.clear()
-            threading.Thread(target=self._run,args=(ident,config,exe,folder),daemon=True).start()
             return dict(self.jobs[ident])
 
-    def cancel(self, ident):
+    def cancel(self,ident):
         with self.lock:
-            if self.active != ident:
-                return self.status(ident)
-            self.stop_event.set()
-            if self.job_object:
-                self.job_object.terminate()
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
-            self.jobs[ident]['status'] = 'cancelling'
+            if self.active!=ident: return self.status(ident)
+            if self.jobs[ident]['status'] in ('completed','cancelled','failed'):return dict(self.jobs[ident])
+            self.stop_event.set();self.jobs[ident]['status']='cancelling'
             return dict(self.jobs[ident])
 
-    def _run(self, ident, config, exe, folder):
-        started = time.monotonic()
-        job = self.jobs[ident]
-        cmd = get_solver_command(exe)
-        self.job_object = WindowsJobObject()
+    def _run(self,ident,config,profile,folder):
+        started=time.monotonic();job=self.jobs[ident];tree=None;pipeline=None;affinity={}
         try:
-            with (folder/'solver.log').open('w',encoding='utf-8') as log:
-                self.process = subprocess.Popen(cmd,cwd=folder,env=solver_env(exe),stdout=log,stderr=subprocess.STDOUT,creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
-                if self.job_object:
-                    self.job_object.assign_process(self.process.pid)
-                while self.process.poll() is None:
-                    if self.stop_event.wait(0.5):
-                        if self.job_object:
-                            self.job_object.terminate()
-                        self.process.terminate()
-                        try: self.process.wait(timeout=5)
-                        except subprocess.TimeoutExpired: self.process.kill(); self.process.wait()
-                        break
-                    output = folder/'ignis.out'
+            pipeline=ProgressiveConverter(folder,config,profile,ident,job['attempt'])
+            with (folder/'solver.log').open('wb') as log:
+                with self.lock:
+                    if not self.stop_event.is_set():
+                        tree=ProcessTree();self.process=tree
+                        tree.start(profile.command(),folder,profile.environment(),log)
+                timeout=float(os.environ.get('IGNIS_TIMEOUT','7200'))
+                while tree and tree.poll() is None and not self.stop_event.wait(.2):
+                    elapsed=time.monotonic()-started
+                    if elapsed>timeout: raise TimeoutError(f'Przekroczono limit obliczeń {timeout:g} s.')
+                    if int(elapsed)%2==0:affinity.update(tree.telemetry().get('processAffinity',{}))
+                    pipeline.drain(elapsed,stop=self.stop_event)
+                    output=folder/'ignis.out'
                     if output.exists():
-                        content = output.read_text(errors='replace')
-                        matches = re.findall(r'Total Time:\s*([\d.E+\-]+)',content)
+                        content=output.read_text(errors='replace')
+                        matches=re.findall(r'Total Time:\s*([\d.E+\-]+)',content)
                         if matches:
-                            t = float(matches[-1])
-                            job.update(physicalTime=t,progress=min(.96,t/config.duration*.96))
-                    job['elapsed'] = round(time.monotonic()-started,1)
+                            t=float(matches[-1]);job.update(physicalTime=t,progress=min(.96,t/config.duration*.96))
+                    job.update(elapsed=round(elapsed,2),previewFrames=len(pipeline.meta['times']))
+                    self._persist(ident,folder)
+                if tree:
+                    if self.stop_event.is_set(): tree.terminate()
+                    tree.wait()
             if self.stop_event.is_set():
-                job.update(status='cancelled',error=None)
-                return
-            log_text = (folder/'solver.log').read_text(errors='replace')
-            out_text = (folder/'ignis.out').read_text(errors='replace') if (folder/'ignis.out').exists() else ''
-            if self.process.returncode != 0 or 'STOP: FDS completed successfully' not in log_text+out_text:
-                raise RuntimeError((log_text+'\n'+out_text)[-5000:])
+                job.update(status='cancelled',error=None);return
+            logs=(folder/'solver.log').read_text(errors='replace')
+            output=folder/'ignis.out'
+            if output.exists(): logs+='\n'+output.read_text(errors='replace')
+            if not tree or tree.poll()!=0 or 'STOP: FDS completed successfully' not in logs: raise RuntimeError(logs[-5000:])
             job.update(status='converting',progress=.97)
-            elapsed = time.monotonic()-started
-            convert(folder,config.canonical(),elapsed)
-            job.update(status='completed',progress=1,physicalTime=config.duration,elapsed=round(time.monotonic()-started,2))
-        except Exception as exc:
-            job.update(status='failed',error=str(exc))
-        finally:
+            pipeline.drain(time.monotonic()-started,final=True,stop=self.stop_event)
             with self.lock:
-                self.active = None
-                self.process = None
-                if self.job_object:
-                    self.job_object.close()
-                    self.job_object = None
-                self._release()
+                if self.stop_event.is_set(): job.update(status='cancelled',error=None);return
+                meta=pipeline.finish(time.monotonic()-started)
+                meta['telemetry']=tree.telemetry()
+                meta['telemetry']['observedProcessAffinity']=affinity
+                # Final frames reuse the immutable preview files, not another copy.
+                meta['frameDirectory']='preview/frames'
+                atomic_json(folder/'result.json',meta)
+                job.update(status='completed',progress=1,physicalTime=config.duration,elapsed=round(time.monotonic()-started,2),previewFrames=len(meta['times']))
+        except Exception as exc:
+            job.update(status='cancelled' if self.stop_event.is_set() else 'failed',error=None if self.stop_event.is_set() else str(exc))
+        finally:
+            native_stopped=tree is None
+            try:
+                if tree:
+                    try:
+                        if not getattr(tree,'stopped',False):
+                            tree.terminate()
+                            if tree.pid:tree.wait()
+                        native_stopped=True
+                    finally:tree.close()
+                if pipeline and job['status']!='completed': pipeline.finish(time.monotonic()-started,job['status'])
+                self._persist(ident,folder)
+            except Exception as exc:
+                job.update(status='failed',error=f'Błąd sprzątania procesów: {exc}')
+                try:self._persist(ident,folder)
+                except OSError:pass
+            finally:
+                with self.lock:
+                    if native_stopped:
+                        self.process=None;self.active=None;self._release()
 
     def history(self):
-        results = []
+        results={}
         for base in (RUNS,SAMPLES):
-            if not base.exists(): continue
-            for folder in base.iterdir():
-                p = folder/'result.json'
-                if p.exists():
-                    try:
-                        meta = json.loads(p.read_text(encoding='utf-8'))
-                        results.append({'id':meta['id'],'config':meta['config'],'elapsed':meta['elapsed'],'sample':base==SAMPLES,'featured':meta.get('featured',False)})
-                    except (ValueError, KeyError): pass
-        return list({x['id']:x for x in results}.values())
+            for root in base.iterdir() if base.exists() else []:
+                if not root.is_dir() or not re.fullmatch('[a-f0-9]{20}',root.name): continue
+                try:
+                    folder=self.folder(root.name) if base==RUNS else root
+                    meta=json.loads((folder/'result.json').read_text(encoding='utf-8'))
+                    results[root.name]=dict(id=meta['id'],config=meta['config'],elapsed=meta['elapsed'],sample=base==SAMPLES,featured=meta.get('featured',False),profile=meta.get('profile'))
+                except (OSError,ValueError,KeyError): pass
+        return list(results.values())
 
     def shutdown(self):
-        """Never leave a CPU-intensive native process orphaned on server exit."""
-        self.stop_event.set()
-        if self.job_object:
-            self.job_object.terminate()
-            self.job_object.close()
-            self.job_object = None
-        p = self.process
-        if p is not None and p.poll() is None:
-            p.terminate()
-            try: p.wait(timeout=5)
-            except subprocess.TimeoutExpired: p.kill(); p.wait(timeout=5)
+        with self.lock:
+            self.stop_event.set();worker=self.worker
+        if worker and worker is not threading.current_thread(): worker.join(timeout=15)
+        if worker and worker.is_alive():
+            # Do not release the lease while a worker still owns native processes.
+            with self.lock:
+                if self.process: self.process.terminate()
+            worker.join(timeout=15)

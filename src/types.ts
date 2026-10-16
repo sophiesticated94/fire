@@ -4,7 +4,7 @@ export interface Config {
   scene:SceneId; quality:'preview'|'fine'; duration:number; fuel:number; oxygen:number;
   wind:number; primary_air:number; ambient:number; moisture:number; ignition:number;
 }
-export interface Job {id:string;status:string;progress:number;physicalTime?:number;elapsed?:number;error?:string;cached?:boolean;config?:Config}
+export interface Job {id:string;status:string;progress:number;physicalTime?:number;elapsed?:number;error?:string;cached?:boolean;config?:Config;attempt?:string;previewFrames?:number;profile?:{mode:string;ranks:number;threads:number}}
 export interface HistoryItem {id:string;config:Config;elapsed:number;sample:boolean;featured?:boolean}
 export interface Result {
   id:string;config:Config;solver:string;model:string;dimensions:[number,number,number];
@@ -12,6 +12,7 @@ export interface Result {
   extrema:{temperature:number;hrr:number;velocity:number}[];
   series:Record<string,number[]>;devices:Record<string,number[]>;
   solidBounds?:number[][];
+  complete?:boolean;attempt?:string;revision?:number;status?:string;profile?:{mode:string;ranks:number;threads:number};
 }
 export const defaults:Record<SceneId,Config> = {
   burner:{scene:'burner',quality:'preview',duration:2,fuel:12,oxygen:20.9,wind:0,primary_air:.3,ambient:20,moisture:0,ignition:0},

@@ -7,6 +7,7 @@ import numpy as np
 sys.path.insert(0,str(Path(__file__).resolve().parent.parent))
 from backend.models import Experiment
 from backend.engine import Engine, ROOT
+from backend.validation import frame_path
 
 cases=[
     ('no-fuel',Experiment(duration=1,fuel=0)),
@@ -27,7 +28,7 @@ for label,config in cases:
     if status['status']!='completed': raise RuntimeError(status)
     folder=engine.folder(job['id'])
     meta=json.loads((folder/'result.json').read_text(encoding='utf-8'))
-    frame=np.fromfile(folder/'frames'/f"{len(meta['times'])-1:05d}.bin",dtype='<f4').reshape(-1,7)
+    frame=np.fromfile(frame_path(folder,meta,len(meta['times'])-1),dtype='<f4').reshape(-1,7)
     hrr=meta['series']['HRR']
     row={'case':label,'id':job['id'],'peakHRR_W':max(hrr)*1000,'finalPeakTemperature_C':float(frame[:,0].max()),'meanU_m_s':float(frame[:,4].mean()),'elapsed_s':meta['elapsed']}
     if label in ('no-fuel','no-heating'):

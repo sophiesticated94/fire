@@ -1,4 +1,7 @@
 :root{background:#141513;--line:#33372f}
+#playback-mode{width:145px;flex-shrink:0}
+.ignition-controls{position:absolute;z-index:4;left:26px;top:117px;display:flex;align-items:center;gap:10px}.ignition-controls button{display:flex;align-items:center;gap:7px;padding:8px 14px;border:1px solid #aa8055;border-radius:5px;color:#e5c29c;background:#302a20;font:inherit;cursor:pointer}.ignition-controls svg{width:16px;height:16px}.ignition-controls button[aria-pressed=false]{color:#a9ada4;border-color:#52574b;background:#20231e}.ignition-controls>span{font-size:9px;color:#bab8a6}.preview-toggle{width:100%;margin-top:12px;padding:10px;border:1px solid #9e7e55;background:#27291f;color:#e8cfaa;border-radius:4px;cursor:pointer}.preview-toggle:disabled{opacity:.5;cursor:wait}#playback-mode{max-width:145px;background:#20231d;color:#c9c7b8;border:1px solid #454b3e;padding:7px;border-radius:4px;font:inherit;font-size:10px}.playback{flex-wrap:wrap}.timeline{min-width:120px}.mini-chart{min-width:150px}.presenting .ignition-controls{display:flex}
+@media(max-width:560px){.ignition-controls{left:14px;top:107px;gap:7px}.ignition-controls>span{font-size:8px;max-width:150px}.ignition-controls button{font-size:11px;padding:7px 10px}#playback-mode{max-width:120px}.playback{gap:10px}}
 .stage{background:radial-gradient(ellipse at 50% 42%,#38383070 0%,#24261d40 36%,#14151300 70%)}
 .control-label{font-size:11px}.number-wrap input{font-size:11px}.number-wrap{font-size:10px}
 .range-extents{font-size:8px}.experiment-desc{font-size:10px}.compute-button{font-size:11px}

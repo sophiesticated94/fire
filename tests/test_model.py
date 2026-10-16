@@ -109,11 +109,19 @@ def test_cross_process_lease_releases(monkeypatch,tmp_path):
     two._release()
 
 
-def test_cancellation_and_busy():
+@pytest.mark.parametrize('mode',['openmp','mpi4'])
+def test_cancellation_and_busy(monkeypatch,tmp_path,mode):
+    import backend.engine as module
+    monkeypatch.setattr(module,'RUNS',tmp_path)
+    monkeypatch.setenv('IGNIS_SOLVER',mode)
     if not solver_path(): pytest.skip('Native FDS required')
     engine=Engine()
     job=engine.create(Experiment(duration=29,fuel=0))
     with pytest.raises(RuntimeError): engine.create(Experiment(duration=28,fuel=0))
+    # Reach actual FDS execution, including all MPI ranks, before cancelling.
+    deadline=time.monotonic()+12
+    while engine.jobs[job['id']].get('physicalTime',0)<=0 and engine.active and time.monotonic()<deadline:time.sleep(.02)
+    assert engine.jobs[job['id']].get('physicalTime',0)>0
     engine.cancel(job['id'])
     deadline=time.monotonic()+10
     while engine.active and time.monotonic()<deadline: time.sleep(.05)
@@ -125,7 +133,7 @@ def test_solver_failure_exposes_error(monkeypatch,tmp_path):
     import backend.engine as module
     monkeypatch.setattr(module,'RUNS',tmp_path)
     original=module.make_deck
-    monkeypatch.setattr(module,'make_deck',lambda c:original(c).replace('IJK=32,32,64','IJK=0,0,0'))
+    monkeypatch.setattr(module,'make_deck',lambda c,ranks=1:original(c,ranks).replace('IJK=32,32,64','IJK=0,0,0'))
     if not solver_path(): pytest.skip('Native FDS required')
     engine=Engine();job=engine.create(Experiment(duration=1))
     deadline=time.monotonic()+20

@@ -2,7 +2,9 @@
 
 Projekt sprawdzono na Windows, Python 3.14.4 i Node.js 24.15.0 z oryginalnym FDS 6.11.1. Wejścia, logi i wyniki przebiegów są zachowane w `runs/`. Dostarczone przykłady znajdują się w `samples/`.
 
-Końcowa kontrola: **13 testów Python i 4 testy Playwright przeszły**, kompilacja TypeScript/Vite zakończyła się poprawnie, a aplikacja wystartowała przez `start.ps1 -NoBrowser`. Zakończono pięć natywnych przypadków brzegowych. Główne przykłady receptury 1.0.2 to dwusekundowe przebiegi, po 21 rzeczywiście obliczonych klatek każdy: palnik `d21db83645d60cad9577`, świeca `1b17aa4d2294ec13a9e7`, drewno `200774f4b12d8edbbadd`. Bezstratnie skompresowane klatki trzech przykładów zajmują łącznie około 72,4 MiB. Dodatkowe starsze nagrania pozostają w historii.
+Historyczna kontrola wersji 1.0.2: **13 testów Python i 4 testy Playwright przeszły**, kompilacja TypeScript/Vite zakończyła się poprawnie, a aplikacja wystartowała przez `start.ps1 -NoBrowser`. Zakończono pięć natywnych przypadków brzegowych. Główne przykłady receptury 1.0.2 to dwusekundowe przebiegi, po 21 rzeczywiście obliczonych klatek każdy: palnik `d21db83645d60cad9577`, świeca `1b17aa4d2294ec13a9e7`, drewno `200774f4b12d8edbbadd`. Bezstratnie skompresowane klatki trzech przykładów zajmują łącznie około 72,4 MiB. Dodatkowe starsze nagrania pozostają w historii.
+
+Końcowa kontrola wersji 1.1.0 / execution-2, 16 października 2026: **53 testy Python i 8 testów Playwright przeszły**, kompilacja TypeScript/Vite zakończyła się poprawnie. Ukończono **60 natywnych prób FDS i 15 zestawów pomiarowych**. Wszystkie siedem pól każdego przebiegu porównano z natywnym odczytem `fdsreader`, wymagając identycznych wartości float32. `artifacts/verification-status.json` potwierdza zakończenie macierzy i wszystkich kontroli; wyniki oraz progi zawiera [raport v2](benchmark-v2.md).
 
 ## Dane przestrzenne
 
@@ -31,6 +33,14 @@ To potwierdza poprawność transportu i indeksowania danych, nie dokładność m
 Średnia składowa U w przypadku napływu wyniosła +0,0814 m/s. Testy braku paliwa i ogrzewania wymagają mocy poniżej 1 mW i temperatury bliskiej otoczeniu. Wyniki dotyczą tych konkretnych wejść i krótkich przebiegów. Zmniejszenie tlenu nie jest uniwersalnym testem empirycznej granicy palności; wynik zależy od modelu wygaszania FDS.
 
 ## Aplikacja
+
+Odczyt przyrostowy sprawdzono dla wszystkich siedmiu kanałów, chwil zapisu i komórek przy granicach siatek w pełnej serii OpenMP 4, MPI 2 i MPI 4. Wszystkie 60 prób przeszło niezależną kontrolę transportu float32. To dowód poprawności odczytu i scalania, a nie równoważności rozwiązań numerycznych między wariantami. Osobne bramki zgodności rozwiązań oraz definicje tolerancji opisano w [raporcie v2](benchmark-v2.md) i [opisie wykonania](execution-v2.md).
+
+Macierz preview obejmuje palnik i świecę po 2 i 6 s oraz drewno 15 s; każdy wariant ma rozgrzewkę i trzy pomiary w osobnych katalogach. Świeca spełnia bramki MPI: wybrany MPI 4 skraca medianę z 227,43 do 129,53 s dla przypadku 2 s oraz z 668,13 do 339,90 s dla przypadku 6 s. Palnik nie spełnia bramek bocznych prędkości. Drewno również je przekracza, a HRRPUV przy granicach siatek osiąga błąd do 48,2% przy limicie 20%. Energia drewna różni się o mniej niż 0,31%, a czas zapłonu jest zgodny; te zgodne wskaźniki nie zastępują odrzuconych bramek pól. MPI drewna pozostaje wykluczone z automatycznego wyboru mimo zmierzonego przyspieszenia do 2,07×.
+
+Automatycznie promowano wyłącznie dokładnie zweryfikowane przypadki świecy 2 i 6 s na tym komputerze. Palnik, drewno, inne parametry oraz fine bez własnych pomiarów korzystają w trybie `auto` z OpenMP 4. Tolerancji nie rozluźniono. Dodatkowe regresje drewna preview/fine i 1/2/4 podsiatek sprawdzają dokładność wszystkich pól przy zaokrągleniach węzłów SMV oraz odrzucanie rzeczywiście przesuniętych węzłów. Pierwszą próbę drewna zakończoną błędem starego konwertera odzyskano do kontroli danych, ale nie zaliczono jej do wyników wydajności; całą serię drewna zmierzono ponownie poprawioną ścieżką.
+
+Testy Windows obejmują niewznowienie procesu po nieudanym przypisaniu do Job Object, zakończenie procesów potomnych, nagłe zabicie właściciela joba, timeout, błąd inicjalizacji, błąd startu wątku, anulowanie przed uruchomieniem i podczas konwersji, zwolnienie blokady oraz odrębne katalogi ponowień. Testy podglądu sprawdzają niepełny rekord, opóźnione pole, atomową publikację i izolację prób. Playwright sprawdza też brak powtarzanego zimnego zapłonu, trwałe gaszenie, narastanie podglądu i zachowanie wybranego czasu/warstwy przy ukończeniu.
 
 Testy Python sprawdzają walidację, tożsamość cache, zgodność powierzchni źródła i strumienia paliwa na obu siatkach, kolejność pól, dekompresję przykładów, blokadę wielu procesów, anulowanie oraz błąd natywnego solvera.
 

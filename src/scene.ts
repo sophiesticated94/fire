@@ -142,11 +142,15 @@ export class FireScene {
     let heat=0;for(let i=1;i<frame.length;i+=7)heat+=Math.max(frame[i],0);
     const c=this.result.coordinates;
     const cellVolume=(c.x[1]-c.x[0])*(c.y[1]-c.y[0])*(c.z[1]-c.z[0]);
-    this.light.intensity=this.layer==='fire'?Math.min(5,Math.sqrt(heat*cellVolume)*4):.3;
+    this.flameLight=Math.min(5,Math.sqrt(heat*cellVolume)*4);this.syncIgnition();
     this.updateArrows();
     this.emitProbe();
   }
-  setLayer(layer:Layer){this.layer=layer;this.volume.material.uniforms.layer.value={fire:0,temperature:1,flow:2,oxygen:3}[layer];this.bloom.strength=layer==='fire'?.55:.08;this.arrows.visible=layer==='flow';this.updateArrows()}
+  private ignited=true;
+  private flameLight=0;
+  setIgnited(value:boolean){this.ignited=value;this.syncIgnition()}
+  private syncIgnition(){this.volume.visible=this.layer!=='fire'||this.ignited;this.light.intensity=this.layer==='fire'&&this.ignited?this.flameLight:0;this.host.dataset.flameVisible=String(this.layer==='fire'&&this.ignited&&this.flameLight>0)}
+  setLayer(layer:Layer){this.layer=layer;this.volume.material.uniforms.layer.value={fire:0,temperature:1,flow:2,oxygen:3}[layer];this.bloom.strength=layer==='fire'?.55:.08;this.arrows.visible=layer==='flow';this.updateArrows();this.syncIgnition()}
   setCutaway(value:boolean){this.volume.material.uniforms.cutaway.value=value;this.updateArrows()}
   setSlice(value:number){this.volume.material.uniforms.sliceY.value=value;this.updateArrows()}
   setQuality(low:boolean){this.renderer.setPixelRatio(low?1:Math.min(devicePixelRatio,1.5));this.resize()}

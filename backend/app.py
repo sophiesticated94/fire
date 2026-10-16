@@ -14,7 +14,7 @@ async def lifespan(app):
     yield
     engine.shutdown()
 
-app = FastAPI(title='IGNIS local CFD API',version='1.0.0',lifespan=lifespan)
+app = FastAPI(title='IGNIS local CFD API',version='1.1.0',lifespan=lifespan)
 
 
 @app.get('/api/health')
@@ -32,6 +32,7 @@ def create(config: Experiment):
     try: return engine.create(config)
     except FileNotFoundError as exc: raise HTTPException(503,str(exc))
     except RuntimeError as exc: raise HTTPException(409,str(exc))
+    except ValueError as exc: raise HTTPException(422,str(exc))
 
 
 @app.get('/api/experiments/{ident}')
@@ -61,13 +62,40 @@ def result(ident: str):
 @app.get('/api/experiments/{ident}/frames/{frame}')
 def frame(ident: str, frame: int):
     if frame < 0: raise HTTPException(404,'Brak klatki')
-    p = result_folder(ident)/'frames'/f'{frame:05d}.bin'
+    folder = result_folder(ident)
+    meta=json.loads((folder/'result.json').read_text(encoding='utf-8'))
+    directory='preview/frames' if meta.get('frameDirectory')=='preview/frames' else 'frames'
+    p = folder/directory/f'{frame:05d}.bin'
     headers={'Cache-Control':'private, max-age=31536000, immutable'}
     if not p.exists():
         p=p.with_suffix('.bin.gz')
         if not p.exists(): raise HTTPException(404,'Brak klatki')
         headers['Content-Encoding']='gzip'
     return FileResponse(p,media_type='application/octet-stream',headers=headers)
+
+
+@app.get('/api/experiments/{ident}/preview/manifest')
+def preview_manifest(ident: str):
+    try: folder=engine.folder(ident)
+    except KeyError: raise HTTPException(404,'Nie znaleziono eksperymentu')
+    path=folder/'preview/manifest.json'
+    if not path.exists(): raise HTTPException(409,'Pierwsze klatki nie są jeszcze gotowe')
+    from fastapi.responses import JSONResponse
+    return JSONResponse(json.loads(path.read_text(encoding='utf-8')),headers={'Cache-Control':'no-store'})
+
+
+@app.get('/api/experiments/{ident}/preview/frames/{frame}')
+def preview_frame(ident: str, frame: int, attempt: str):
+    if frame<0: raise HTTPException(404,'Brak klatki')
+    try: folder=engine.folder(ident,attempt)
+    except KeyError: raise HTTPException(404,'Nie znaleziono próby')
+    manifest=folder/'preview/manifest.json'
+    if not manifest.exists(): raise HTTPException(409,'Podgląd nie jest gotowy')
+    meta=json.loads(manifest.read_text(encoding='utf-8'))
+    if frame>=len(meta['times']): raise HTTPException(404,'Klatka nie została opublikowana')
+    path=folder/'preview/frames'/f'{frame:05d}.bin'
+    if not path.is_file(): raise HTTPException(404,'Brak klatki')
+    return FileResponse(path,media_type='application/octet-stream',headers={'Cache-Control':'private, max-age=31536000, immutable'})
 
 
 @app.get('/api/experiments/{ident}/input')

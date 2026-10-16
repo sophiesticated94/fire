@@ -19,10 +19,8 @@ def compute(config):
     return job['id']
 
 def meta(ident):
-    for base in ('runs','samples'):
-        path=ROOT/base/ident/'result.json'
-        if path.exists(): return json.loads(path.read_text(encoding='utf-8'))
-    raise FileNotFoundError(ident)
+    path=Engine().folder(ident)/'result.json'
+    return json.loads(path.read_text(encoding='utf-8'))
 
 def summarize(m,t):
     times=np.asarray(m['series']['Time'])

@@ -7,6 +7,7 @@ import './style.css';
 import './fallback.css';
 import './refinements.css';
 import {FireScene} from './scene';
+import {burningWindow,bounce} from './playback';
 import {defaults,sceneCopy,sceneNames,type Config,type HistoryItem,type Job,type Layer,type Result,type SceneId} from './types';
 
 const icon=(name:string)=>{
@@ -20,6 +21,8 @@ let layer:Layer='fire',playing=true,playTime=0,currentIndex=-1,loadingFrame=fals
 let lastStatus='',pollHandle:number|undefined,frameAbort:AbortController|undefined;
 const cache=new Map<number,Float32Array>();
 let fire:FireScene|undefined;
+let ignited=true,playbackMode:'continuous'|'physical'='continuous',direction=1;
+let burnWindow:[number,number]|undefined,previewResult:Result|undefined,savedResult:{id:string;time:number}|undefined;
 
 $('#app').innerHTML=`
 <header class="header"><a class="brand" href="/" aria-label="IGNIS — strona główna"><span class="brand-icon">${icon('flame')}</span>IGNIS<span class="brand-separator"></span><span class="brand-caption">LABORATORIUM OGNIA</span></a><div class="header-right"><span class="live-dot"></span><span id="engine-label">Łączenie z laboratorium</span><button class="icon-button" id="about" aria-label="O modelu i źródłach">${icon('info')}</button></div></header>
@@ -35,6 +38,7 @@ $('#app').innerHTML=`
       <div class="layer-tabs" role="tablist" aria-label="Warstwa wizualizacji">${[['fire','Płomień'],['temperature','Temperatura'],['flow','Przepływ'],['oxygen','Tlen']].map(([id,label],i)=>`<button role="tab" aria-selected="${i===0}" class="layer-tab ${i===0?'active':''}" data-layer="${id}">${label}</button>`).join('')}</div>
       <div id="viewport"></div>
       <div class="result-conditions" id="result-conditions"></div>
+      <div class="ignition-controls"><button id="ignition" aria-pressed="true">${icon('flame')}<span>Zgaś</span></button><span id="fire-state" role="status">Pokaz płomienia · zapis CFD</span></div>
       <div class="empty-state" id="empty-state"><span class="loading-ring"></span><span id="empty-message">Wczytywanie obliczonego doświadczenia…</span></div>
       <div class="stage-caption"><span class="caption-line"></span><span id="stage-annotation">PALIWO + TLEN → ENERGIA</span></div>
       <div class="legend" id="legend" hidden><span id="legend-title">TEMPERATURA / °C</span><div class="legend-gradient"></div><div class="legend-values"><span id="legend-min">20</span><span id="legend-max">1600</span></div></div>
@@ -54,11 +58,12 @@ $('#app').innerHTML=`
       <button class="compute-button" id="compute">${icon('flame')}<span>Oblicz doświadczenie</span>${icon('arrow')}</button>
       <p class="compute-note" id="compute-note">Nowe warunki wymagają obliczeń CFD.<br>Odtwarzanie wyników działa płynnie.</p>
       <div id="job-status" hidden><div class="job-title"><span id="job-title">Obliczanie</span><button id="cancel">Anuluj</button></div><progress id="job-progress" max="1" value="0"></progress><p id="job-detail"></p></div>
+      <button id="preview-toggle" class="preview-toggle" hidden disabled>Podgląd obliczeń</button><p id="preview-note" class="compute-note" hidden>Oczekiwanie na kompletne klatki CFD.</p>
       <div id="error-message" role="alert" hidden></div>
       <div class="history-select"><label for="history">Zapisane doświadczenia</label><select id="history"><option value="">Wybierz wynik…</option></select></div>
     </aside>
   </div>
-  <section class="playback"><button class="play-button" id="play" aria-label="Wstrzymaj odtwarzanie">${icon('pause')}</button><button class="icon-button" id="rewind" aria-label="Odtwórz od początku">${icon('reset')}</button><div class="timeline"><div class="timeline-label"><span>CZAS DOŚWIADCZENIA</span><strong><span id="current-time">0,00</span><small> / <span id="end-time">—</span> s</small></strong></div><input id="timeline" aria-label="Czas doświadczenia" type="range" min="0" max="6" step="0.01" value="0"></div><select id="speed" aria-label="Prędkość odtwarzania"><option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option></select><div class="mini-chart"><div><span>MOC SPALANIA</span><small>W · czas fizyczny</small></div><canvas id="chart" width="560" height="100" aria-label="Wykres mocy spalania w czasie"></canvas></div></section>
+  <section class="playback"><button class="play-button" id="play" aria-label="Wstrzymaj odtwarzanie">${icon('pause')}</button><button class="icon-button" id="rewind" aria-label="Odtwórz od początku">${icon('reset')}</button><div class="timeline"><div class="timeline-label"><span>CZAS ZAPISU CFD</span><strong><span id="current-time">0,00</span><small> / <span id="end-time">—</span> s</small></strong></div><input id="timeline" aria-label="Czas doświadczenia" type="range" min="0" max="6" step="0.01" value="0"></div><select id="playback-mode" aria-label="Tryb odtwarzania"><option value="continuous">Ciągły pokaz</option><option value="physical">Pełny przebieg</option></select><select id="speed" aria-label="Prędkość odtwarzania"><option value="0.25">0,25×</option><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option></select><div class="mini-chart"><div><span>MOC SPALANIA</span><small>W · czas fizyczny</small></div><canvas id="chart" width="560" height="100" aria-label="Wykres mocy spalania w czasie"></canvas></div></section>
   <section class="learning"><div class="learning-intro"><div class="eyebrow">CO WŁAŚCIWIE WIDZISZ?</div><h2 id="learning-title">Anatomia płomienia</h2><p id="learning-description"></p></div><div id="learning-cards"></div></section>
   <footer><span>IGNIS <span class="footer-dot">/</span> Fizyka, która rozświetla świat.</span><span>Wyniki CFD · Rekonstrukcja światła · <button id="sources">Model i źródła ↗</button></span></footer>
 </main>
@@ -110,14 +115,14 @@ async function chooseScene(id:SceneId){
   config={...defaults[id]};renderControls();updateLearning();
   document.querySelectorAll<HTMLElement>('[data-scene]').forEach(b=>b.classList.toggle('active',b.dataset.scene===id));
   const candidates=history.filter(h=>h.config.scene===id);const sample=candidates.find(h=>h.featured)??candidates.find(h=>h.sample)??candidates.find(h=>h.config.duration>=defaults[id].duration)??candidates[0];
-  if(sample)await loadResult(sample.id,true);
+  if(sample)await loadResult(sample.id,false);
   else{generation++;frameAbort?.abort();cache.clear();result=undefined;currentIndex=-1;fire?.setApparatus(id);if(fire){fire.frame=undefined;fire.result=undefined;(fire.texture.image.data as Float32Array).fill(0);fire.texture.needsUpdate=true;fire.light.intensity=0}$('#empty-state').hidden=false;$('#empty-message').textContent='Gotowe do pierwszego doświadczenia. Wybierz „Oblicz”.';$('#result-label').textContent='BRAK OBLICZONEGO WYNIKU';updateMetrics();drawChart()}
   markDirty();
 }
-async function loadResult(id:string,adoptConfig=true){
+async function loadResult(id:string,adoptConfig=true,preferredTime?:number,partial?:Result){
   const token=++generation;frameAbort?.abort();cache.clear();loadingFrame=false;
   $('#empty-state').hidden=false;$('#empty-message').textContent='Wczytywanie pól przestrzennych…';
-  try{const next=await api<Result>(`/experiments/${id}/result`);if(token!==generation)return;result=next;
+  try{const next=partial??await api<Result>(`/experiments/${id}/result`);if(token!==generation)return;result=next;
     if(adoptConfig){config={...next.config};renderControls();updateLearning();document.querySelectorAll<HTMLElement>('[data-scene]').forEach(b=>b.classList.toggle('active',b.dataset.scene===config.scene))}
     fire?.setResult(next);updateLayer();currentIndex=-1;
     playTime=Math.min(1.8,next.times[next.times.length-1]*.5);
@@ -125,9 +130,14 @@ async function loadResult(id:string,adoptConfig=true){
       let peak=0;for(let i=1;i<next.extrema.length;i++)if(next.extrema[i].temperature>next.extrema[peak].temperature)peak=i;
       playTime=next.times[peak];
     }
+    burnWindow=burningWindow(next);direction=1;
+    if(preferredTime!==undefined)playTime=Math.min(preferredTime,next.times.at(-1)??0);
+    else if(next.complete===false)playTime=next.times[0]??0;
+    else if(playbackMode==='continuous'&&burnWindow)playTime=burnWindow[0];
+    fire?.setIgnited(ignited);updateIgnition();
     lastTick=performance.now();
     $<HTMLInputElement>('#timeline').max=String(next.times[next.times.length-1]);$('#end-time').textContent=format(next.times[next.times.length-1],2);
-    $('#result-label').textContent=`FDS · ${next.dimensions.map(String).join(' × ')}`;
+    $('#result-label').textContent=`${next.complete===false?'WYNIK CZĘŚCIOWY · ':''}FDS · ${next.dimensions.map(String).join(' × ')}`;
     const rc=next.config;
     $('#result-conditions').textContent=rc.scene==='wood'?`WYNIK: wilgotność ${format(rc.moisture,0)}% · ogrzewanie ${format(rc.ignition,0)} kW/m² · napływ ${format(rc.wind,2)} m/s`:`WYNIK: paliwo ${format(rc.fuel,1)} mg/s · O₂ ${format(rc.oxygen,1)}% · napływ ${format(rc.wind,2)} m/s`;
     $('#scale-label').textContent=`Δx ${format((next.coordinates.x[1]-next.coordinates.x[0])*1000,2)} mm · komórka siatki`;
@@ -140,11 +150,11 @@ async function loadResult(id:string,adoptConfig=true){
   }catch(e){if(token===generation){showError((e as Error).message);$('#empty-message').textContent='Nie udało się wczytać wyniku.'}}
 }
 function nearestTime(t:number){if(!result)return 0;let best=0;for(let i=1;i<result.times.length;i++)if(Math.abs(result.times[i]-t)<Math.abs(result.times[best]-t))best=i;return best}
-async function fetchFrame(index:number,signal?:AbortSignal){if(!result)throw new Error('Brak wyniku');const selected=result,token=generation;const cached=cache.get(index);if(cached)return cached;const r=await fetch(`/api/experiments/${selected.id}/frames/${index}`,{signal});if(!r.ok)throw new Error('Nie udało się pobrać klatki');const data=new Float32Array(await r.arrayBuffer());if(data.length!==selected.dimensions.reduce((a,b)=>a*b,1)*7)throw new Error('Nieprawidłowy rozmiar pola');if(token===generation){cache.set(index,data);while(cache.size>8)cache.delete(cache.keys().next().value!)}return data}
+async function fetchFrame(index:number,signal?:AbortSignal){if(!result)throw new Error('Brak wyniku');const selected=result,token=generation;const cached=cache.get(index);if(cached)return cached;const suffix=selected.complete===false?`preview/frames/${index}?attempt=${selected.attempt}`:`frames/${index}`;const r=await fetch(`/api/experiments/${selected.id}/${suffix}`,{signal});if(!r.ok)throw new Error('Nie udało się pobrać klatki');const data=new Float32Array(await r.arrayBuffer());if(data.length!==selected.dimensions.reduce((a,b)=>a*b,1)*7)throw new Error('Nieprawidłowy rozmiar pola');if(token===generation){cache.set(index,data);while(cache.size>8)cache.delete(cache.keys().next().value!)}return data}
 async function showFrame(index:number){
   if(!result||loadingFrame||index===currentIndex)return;
   loadingFrame=true;const token=generation;frameAbort=new AbortController();
-  try{const data=await fetchFrame(index,frameAbort.signal);if(token!==generation)return;fire?.setFrame(data);currentIndex=index;$('#empty-state').hidden=true;updateMetrics();drawChart()}
+  try{const data=await fetchFrame(index,frameAbort.signal);if(token!==generation)return;fire?.setFrame(data);currentIndex=index;$('#empty-state').hidden=true;updateMetrics();drawChart();updateIgnition()}
   catch(e){if(token===generation&&(e as Error).name!=='AbortError'){playing=false;updatePlayButton();showError((e as Error).message)}}
   finally{if(token===generation)loadingFrame=false}
 }
@@ -174,26 +184,52 @@ async function compute(){
   if([...$('#controls').querySelectorAll<HTMLInputElement>('input[type=number]')].some(x=>!x.reportValidity()))return;
   try{const next=await api<Job>('/experiments',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(config)});job=next;
     if(job.status==='completed'){await refreshHistory();await loadResult(job.id);return}
-    pendingJobId=job.id;renderJob();startPolling();
+    pendingJobId=job.id;previewResult=undefined;savedResult=undefined;$('#preview-toggle').hidden=false;$<HTMLButtonElement>('#preview-toggle').disabled=true;$('#preview-note').hidden=false;renderJob();startPolling();
   }catch(e){showError((e as Error).message)}
 }
 function renderJob(){
   const active=job&&['running','converting','cancelling'].includes(job.status);$('#job-status').hidden=!active;$<HTMLButtonElement>('#compute').disabled=!!active;
   if(!job)return;$<HTMLProgressElement>('#job-progress').value=job.progress;
   $('#job-title').textContent=job.status==='converting'?'Przygotowanie wizualizacji':job.status==='cancelling'?'Zatrzymywanie…':`Obliczenia · ${Math.round(job.progress*100)}%`;
-  $('#job-detail').textContent=`${format(job.physicalTime??0,2)} / ${job.config?.duration??config.duration} s czasu fizycznego · ${format(job.elapsed??0,0)} s pracy`;
+  $('#job-detail').textContent=`${format(job.physicalTime??0,2)} / ${job.config?.duration??config.duration} s czasu fizycznego · ${format(job.elapsed??0,0)} s pracy${job.profile?` · ${job.profile.mode.toUpperCase()} · ${job.profile.ranks>1?job.profile.ranks+' procesy':job.profile.threads+' wątki'}`:''}`;
 }
 function startPolling(){if(pollHandle)clearTimeout(pollHandle);pollHandle=window.setTimeout(poll,800)}
 async function poll(){
   if(!pendingJobId)return;
-  try{job=await api<Job>(`/experiments/${pendingJobId}`);renderJob();
-    if(job.status==='completed'){pendingJobId=undefined;await refreshHistory();await loadResult(job.id)}
+  try{job=await api<Job>(`/experiments/${pendingJobId}`);renderJob();try{await refreshPreview(job)}catch(e){showError(`Podgląd niedostępny. ${(e as Error).message}`)}
+    if(job.status==='completed'){const keep=result?.id===job.id&&result.complete===false;pendingJobId=undefined;await refreshHistory();await loadResult(job.id,true,keep?playTime:undefined);$('#preview-toggle').hidden=true;$('#preview-note').hidden=true;savedResult=undefined}
     else if(job.status==='failed'||job.status==='interrupted'){showError(job.error??'Obliczenia nie zakończyły się prawidłowo.');pendingJobId=undefined}
     else if(job.status==='cancelled'){pendingJobId=undefined;$('#compute-note').textContent='Obliczenia anulowane. Poprzedni wynik jest nadal dostępny.'}
     else startPolling();
   }catch(e){showError(`Brak połączenia z serwerem. ${(e as Error).message}`);startPolling()}
 }
 function updatePlayButton(){$('#play').innerHTML=icon(playing?'pause':'play');$('#play').setAttribute('aria-label',playing?'Wstrzymaj odtwarzanie':'Odtwórz wynik')}
+function togglePlayback(){if(!playing&&playbackMode==='physical'&&result&&result.complete!==false&&playTime>=(result.times.at(-1)??0)){playTime=0;void showFrame(0)}playing=!playing;lastTick=performance.now();updatePlayButton()}
+function updateIgnition(){
+  $('#ignition').setAttribute('aria-pressed',String(ignited));$('#ignition span').textContent=ignited?'Zgaś':'Zapłon';
+  $('#fire-state').textContent=!ignited?'Płomień zgaszony · odczyty: zapis CFD':(result?.extrema[currentIndex]?.hrr??0)>1e-6?'Płomień zapalony · zapis CFD':'Brak spalania w tej klatce · zapis CFD';
+}
+async function refreshPreview(current:Job){
+  const response=await fetch(`/api/experiments/${current.id}/preview/manifest`,{cache:'no-store'});
+  if(response.status===409||response.status===404)return;
+  if(!response.ok)throw new Error('Nie udało się odczytać podglądu obliczeń.');
+  const next:Result=await response.json();previewResult=next;
+  $('#preview-toggle').hidden=false;$<HTMLButtonElement>('#preview-toggle').disabled=!next.times.length;
+  $('#preview-note').hidden=false;$('#preview-note').textContent=`${current.status==='cancelled'?'Anulowany · ':current.status==='failed'?'Przerwany · ':''}Wynik częściowy · ${next.times.length} klatek · ${format(next.times.at(-1)??0,2)} s`;
+  if(result?.complete===false&&result.id===next.id&&result.attempt===next.attempt){
+    // Existing textures and cached frames stay valid; only the manifest grows.
+    result={...next,complete:false};burnWindow=burningWindow(result);
+    $<HTMLInputElement>('#timeline').max=String(next.times.at(-1)??0);$('#end-time').textContent=format(next.times.at(-1)??0,2);
+  }
+}
+$('#preview-toggle').addEventListener('click',async()=>{
+  try{
+    if(result?.complete===false&&savedResult){const previous=savedResult;savedResult=undefined;await loadResult(previous.id,false,previous.time);$('#preview-toggle').textContent='Podgląd obliczeń'}
+    else if(previewResult?.times.length){if(result&&result.complete!==false)savedResult={id:result.id,time:playTime};await loadResult(previewResult.id,false,undefined,{...previewResult,complete:false});$('#preview-toggle').textContent=savedResult?'Wróć do poprzedniego wyniku':'Podgląd obliczeń'}
+  }catch(e){showError((e as Error).message)}
+});
+$('#ignition').addEventListener('click',()=>{ignited=!ignited;fire?.setIgnited(ignited);updateIgnition()});
+$('#playback-mode').addEventListener('change',e=>{playbackMode=(e.target as HTMLSelectElement).value as typeof playbackMode;direction=1;if(playbackMode==='continuous'&&burnWindow){playTime=Math.max(burnWindow[0],Math.min(playTime,burnWindow[1]));void showFrame(nearestTime(playTime))}});
 function openDetails(){($<HTMLDialogElement>('#details')).showModal()}
 
 document.querySelectorAll<HTMLElement>('[data-scene]').forEach(b=>b.addEventListener('click',()=>void chooseScene(b.dataset.scene as SceneId)));
@@ -207,12 +243,12 @@ $('#cutaway').addEventListener('change',e=>{const on=(e.target as HTMLInputEleme
 $('#slice').addEventListener('input',e=>fire?.setSlice(Number((e.target as HTMLInputElement).value)));
 $('#low-render').addEventListener('change',e=>fire?.setQuality((e.target as HTMLInputElement).checked));
 $('#history').addEventListener('change',e=>{const id=(e.target as HTMLSelectElement).value;if(id)void loadResult(id)});
-$('#play').addEventListener('click',()=>{playing=!playing;updatePlayButton();lastTick=performance.now()});
-$('#rewind').addEventListener('click',()=>{playTime=0;void showFrame(0)});
+$('#play').addEventListener('click',togglePlayback);
+$('#rewind').addEventListener('click',()=>{playbackMode='physical';$<HTMLSelectElement>('#playback-mode').value='physical';playTime=0;void showFrame(0)});
 $('#speed').addEventListener('change',e=>{speed=Number((e.target as HTMLSelectElement).value)});
-$('#timeline').addEventListener('input',e=>{playing=false;updatePlayButton();playTime=Number((e.target as HTMLInputElement).value);void showFrame(nearestTime(playTime))});
+$('#timeline').addEventListener('input',e=>{playing=false;playbackMode='physical';$<HTMLSelectElement>('#playback-mode').value='physical';updatePlayButton();playTime=Number((e.target as HTMLInputElement).value);void showFrame(nearestTime(playTime))});
 $('#presentation').addEventListener('click',()=>{document.body.classList.toggle('presenting');fire?.resize()});
-document.addEventListener('keydown',e=>{if(e.key==='Escape')document.body.classList.remove('presenting');if(e.code==='Space'&&!['INPUT','SELECT','BUTTON','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!$<HTMLDialogElement>('#details').open){e.preventDefault();playing=!playing;updatePlayButton()}});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.body.classList.remove('presenting');if(e.code==='Space'&&!['INPUT','SELECT','BUTTON','TEXTAREA'].includes((e.target as HTMLElement).tagName)&&!$<HTMLDialogElement>('#details').open){e.preventDefault();togglePlayback()}});
 for(const id of ['about','sources','explain'])$(`#${id}`).addEventListener('click',openDetails);
 $('.dialog-close').addEventListener('click',()=>$<HTMLDialogElement>('#details').close());
 $<HTMLDialogElement>('#details').addEventListener('click',e=>{if(e.target===$('#details'))$<HTMLDialogElement>('#details').close()});
@@ -231,5 +267,5 @@ try{
 
 async function init(){try{const health=await api<{solverAvailable:boolean;active:string|null}>('/health');$('#engine-label').textContent=health.solverAvailable?'FDS 6.11.1 · lokalnie':'FDS · wymaga przygotowania';if(!health.solverAvailable)showError('Brak lokalnego solvera. Uruchom scripts/setup.ps1.');await refreshHistory();await chooseScene('burner');if(health.active){pendingJobId=health.active;startPolling()}}catch(e){$('#engine-label').textContent='Serwer obliczeń jest wyłączony';$('#empty-message').textContent='Uruchom start.ps1, aby otworzyć laboratorium.';showError((e as Error).message)}}
 void init();
-function tick(now:number){const delta=Math.min((now-lastTick)/1000,.1);lastTick=now;if(result&&!document.hidden){if(playing&&currentIndex>=0){playTime+=delta*speed;const end=result.times[result.times.length-1];if(playTime>end)playTime=0}const i=nearestTime(playTime);if(i!==currentIndex)void showFrame(i);$('#current-time').textContent=format(result.times[currentIndex]??0,2);if(!loadingFrame)$<HTMLInputElement>('#timeline').value=String(result.times[currentIndex]??0)}requestAnimationFrame(tick)}
+function tick(now:number){const delta=Math.min((now-lastTick)/1000,.1);lastTick=now;if(result&&!document.hidden){if(playing&&currentIndex>=0){const end=result.times.at(-1)??0;if(result.complete===false){playTime=Math.min(end,playTime+delta*speed)}else if(playbackMode==='continuous'&&burnWindow){const next=bounce(playTime,delta*speed,direction,burnWindow);playTime=next.time;direction=next.direction}else{playTime=Math.min(end,playTime+delta*speed);if(playTime>=end){playing=false;updatePlayButton()}}}const i=nearestTime(playTime);if(i!==currentIndex)void showFrame(i);$('#current-time').textContent=format(result.times[currentIndex]??0,2);if(!loadingFrame)$<HTMLInputElement>('#timeline').value=String(result.times[currentIndex]??0)}requestAnimationFrame(tick)}
 requestAnimationFrame(tick);

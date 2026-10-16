@@ -5,8 +5,10 @@ from pathlib import Path
 import shutil
 import sys
 root=Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(root))
+from backend.engine import Engine
 for ident in sys.argv[1:]:
-    src=root/'runs'/ident
+    src=Engine().folder(ident)
     if not (src/'result.json').exists(): raise RuntimeError(f'Incomplete experiment: {ident}')
     meta=json.loads((src/'result.json').read_text(encoding='utf-8'))
     # Preserve supplementary recordings, with one primary example per scene.
@@ -22,8 +24,10 @@ for ident in sys.argv[1:]:
     for name in ('config.json','ignis.fds','ignis_hrr.csv','ignis_devc.csv','solver.log','reference-check.json'):
         if (src/name).exists(): shutil.copy2(src/name,dest/name)
     meta['featured']=True
+    source_frames=src/('preview/frames' if meta.get('frameDirectory')=='preview/frames' else 'frames')
+    meta['frameDirectory']='frames'
     (dest/'frames').mkdir(exist_ok=True)
-    for frame in sorted((src/'frames').glob('*.bin')):
+    for frame in sorted(source_frames.glob('*.bin')):
         compressed=dest/'frames'/(frame.name+'.gz')
         if not compressed.exists():
             temporary=compressed.with_suffix('.pending')

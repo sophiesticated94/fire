@@ -38,8 +38,11 @@ class Experiment(BaseModel):
             data['ignition'] = 0
         return data
 
-    def key(self):
+    def key(self, profile=None):
         payload = {'config': self.canonical(), 'model': MODEL_VERSION, 'solver': SOLVER_VERSION}
+        if profile is not None:
+            from .profiles import TRANSPORT_VERSION
+            payload.update(profile=profile.identity(),transport=TRANSPORT_VERSION)
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:20]
 
 
@@ -53,7 +56,7 @@ def geometry(c: Experiment):
     return [-size[0]/2, size[0]/2, -size[1]/2, size[1]/2, 0, size[2]], cells
 
 
-def make_deck(c: Experiment) -> str:
+def make_deck(c: Experiment, ranks: int = 1) -> str:
     bounds, cells = geometry(c)
     xb = ','.join(f'{n:.8f}' for n in bounds)
     # FDS background O2 mass fraction; replace O2 by N2 at fixed pressure.
@@ -61,7 +64,7 @@ def make_deck(c: Experiment) -> str:
     yo = xo*31.998/(xo*31.998 + (1-xo)*28.014)
     out = [
         "&HEAD CHID='ignis', TITLE='IGNIS quantitative educational experiment' /",
-        f"&MESH IJK={','.join(map(str,cells))}, XB={xb} /",
+        *mesh_lines(bounds,cells,ranks),
         f"&TIME T_END={c.duration}, WALL_INCREMENT=20 /",
         f"&MISC TMPA={c.ambient}, Y_O2_INFTY={yo:.9f} /",
         "&DUMP DT_DEVC=0.1, DT_HRR=0.1, DT_SLCF=0.1, DT_SL3D=0.1 /",
@@ -133,3 +136,17 @@ def make_deck(c: Experiment) -> str:
         '&TAIL /',
     ]
     return '\n'.join(out)+'\n'
+
+
+def mesh_lines(bounds,cells,ranks=1):
+    if ranks not in (1,2,4) or cells[2]%ranks:
+        raise ValueError('Nieprawidłowy podział siatki MPI.')
+    if ranks==1:
+        return [f"&MESH IJK={','.join(map(str,cells))}, XB={','.join(f'{n:.8f}' for n in bounds)} /"]
+    lines=[]
+    for i in range(ranks):
+        b=list(bounds)
+        b[4]=bounds[4]+(bounds[5]-bounds[4])*i/ranks
+        b[5]=bounds[4]+(bounds[5]-bounds[4])*(i+1)/ranks
+        lines.append(f"&MESH ID='M{i+1}', IJK={cells[0]},{cells[1]},{cells[2]//ranks}, XB={','.join(f'{n:.8f}' for n in b)}, MPI_PROCESS={i} /")
+    return lines

@@ -6,8 +6,12 @@ import sys
 import numpy as np
 
 root=Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(root))
+from backend.validation import frame_path
 folder=Path(sys.argv[1]).resolve()
 meta=json.loads((folder/'result.json').read_text(encoding='utf-8'))
+if meta.get('profile',{}).get('ranks',1)>1:
+    raise RuntimeError('Ten skrypt fds2ascii obsługuje jedną siatkę. Dla MPI użyj backend.validation.verify_native(folder), sprawdzającego wszystkie pola i podsiatki.')
 end=meta['times'][-1]
 stdin=f'ignis\n2\n1\nn\n{end-0.0001} {end+0.0001}\n7\n1\n2\n3\n4\n5\n6\n7\nreference.csv\n'
 exe=root/'tools/fds/firemodels/FDS6/bin/fds2ascii.exe'
@@ -22,7 +26,7 @@ table=np.loadtxt(p,delimiter=',',skiprows=2)
 nx,ny,nz=meta['dimensions']
 raw=table[:,3:].reshape(nz+1,ny+1,nx+1,7)[1:,1:,1:]
 index=len(meta['times'])-1
-transport=np.fromfile(folder/'frames'/f'{index:05d}.bin',dtype='<f4').reshape(nz,ny,nx,7)
+transport=np.fromfile(frame_path(folder,meta,index),dtype='<f4').reshape(nz,ny,nx,7)
 np.testing.assert_allclose(raw,transport,rtol=6e-5,atol=1e-6)
 report={'source':'NIST fds2ascii FDS 6.11.1','time':end,'cells':nx*ny*nz,'maxAbsoluteError':{c['name']:float(np.abs(raw[...,i]-transport[...,i]).max()) for i,c in enumerate(meta['channels'])},'tolerance':'rtol 6e-5, atol 1e-6 (ASCII precision)','passed':True}
 (folder/'reference-check.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
