@@ -4,15 +4,15 @@ import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import type {GpuEngine} from '../gpu/GpuEngine';
 
 // Both compute and shading bind the same GPUBuffer-backed attributes. No volume readback.
-const volume=`fn volume(at:vec3f,eye:vec3f,r:ptr<storage,array<f32>,read>,v:ptr<storage,array<f32>,read>,layer:f32,cut:f32,scale:f32)->vec4f {
+const volume=`fn volume(at:vec3f,eye:vec3f,r:ptr<storage,array<f32>,read>,v:ptr<storage,array<f32>,read>,layer:f32,cut:f32,scale:f32,ambient:f32)->vec4f {
  let ray=normalize(at-eye);let inv=1./ray;let a=(-vec3f(.5)-eye)*inv;let b=(vec3f(.5)-eye)*inv;
  let near=max(max(min(a.x,b.x),min(a.y,b.y)),min(a.z,b.z));let far=min(min(max(a.x,b.x),max(a.y,b.y)),max(a.z,b.z));
  var colour=vec3f(0.);var alpha=0.;let start=max(near,0.);let ds=(far-start)/96.;
  for(var j=0;j<96;j++) {let p=eye+ray*(start+(f32(j)+.5)*ds)+.5;if(cut>.5&&p.z>.5){continue;}
  let q=clamp(vec3i(vec3f(p.x*32.,p.z*32.,p.y*64.)),vec3i(0),vec3i(31,31,63));let id=u32((q.z*32+q.y)*32+q.x);
- let den=(*r)[id];let t=101325./(287.05*den);var value=clamp((t-293.15)/scale,0.,1.);
+ let den=(*r)[id];let t=101325./(287.05*den);var value=clamp((t-ambient)/scale,0.,1.);
  var rgb=mix(vec3f(.14,.42,.61),vec3f(1.,.52,.19),value);
- if(layer>1.5){value=clamp((1.204118-den)/.15,0.,1.);rgb=mix(vec3f(.12,.68,.75),vec3f(.94,.79,.48),value);}
+ if(layer>1.5){value=clamp((101325./(287.05*ambient)-den)/.15,0.,1.);rgb=mix(vec3f(.12,.68,.75),vec3f(.94,.79,.48),value);}
  if(layer>.5&&layer<1.5){let ix=u32((q.z*32+q.y)*33+q.x);let iy=33u*32u*64u+u32((q.z*33+q.y)*32+q.x);let iz=33u*32u*64u+32u*33u*64u+id;let u=vec3f(((*v)[ix]+(*v)[ix+1u])*.5,((*v)[iy]+(*v)[iy+32u])*.5,((*v)[iz]+(*v)[iz+1024u])*.5);value=clamp(length(u)/.4,0.,1.);rgb=mix(vec3f(.1,.55,.65),vec3f(.9,.87,.58),value);}
  let opacity=1.-exp(-value*ds*6.);colour+=(1.-alpha)*opacity*rgb;alpha+=(1.-alpha)*opacity;if(alpha>.97){break;}
  }return vec4f(colour/max(alpha,.00001),alpha);
@@ -20,14 +20,14 @@ const volume=`fn volume(at:vec3f,eye:vec3f,r:ptr<storage,array<f32>,read>,v:ptr<
 
 export class WebGpuFireScene {
  readonly scene=new Scene();readonly camera=new PerspectiveCamera(38,1,.001,10);readonly controls:OrbitControls;
- private eye=uniform(new Vector3());private layer=uniform(0);private cut=uniform(0);private scale=uniform(20);
+ private ambient=uniform(293.15);private eye=uniform(new Vector3());private layer=uniform(0);private cut=uniform(0);private scale=uniform(20);
  private materials:MeshBasicNodeMaterial[][]=[];private volume:Mesh;private observer:ResizeObserver;private disposed=false;private arrows:InstancedMesh;private arrowMaterials:MeshBasicNodeMaterial[]=[];private showFlow=false;
  onProbe?:(values:number[])=>void;
  constructor(readonly host:HTMLElement,readonly engine:GpuEngine){
    const r=engine.renderer;host.append(r.domElement);r.setPixelRatio(Math.min(devicePixelRatio,1.5));r.setClearColor(new Color('#101513'));
    this.camera.position.set(.38,.24,.48);this.controls=new OrbitControls(this.camera,r.domElement);this.controls.target.set(0,.15,0);this.controls.enableDamping=true;this.controls.minDistance=.24;this.controls.maxDistance=1.2;this.controls.update();
    for(const rho of engine.fields.rho){const row:MeshBasicNodeMaterial[]=[];for(const flow of engine.fields.velocity){
-     const colour=wgslFn(volume)({at:positionLocal,eye:this.eye,r:storage(rho.attribute,'float',rho.count).toReadOnly(),v:storage(flow.attribute,'float',flow.count).toReadOnly(),layer:this.layer,cut:this.cut,scale:this.scale}) as ReturnType<typeof vec4>;
+     const colour=wgslFn(volume)({at:positionLocal,eye:this.eye,r:storage(rho.attribute,'float',rho.count).toReadOnly(),v:storage(flow.attribute,'float',flow.count).toReadOnly(),layer:this.layer,cut:this.cut,scale:this.scale,ambient:this.ambient}) as ReturnType<typeof vec4>;
      const material=new MeshBasicNodeMaterial({transparent:true,side:BackSide,depthWrite:false});material.colorNode=colour.rgb;material.opacityNode=colour.a;row.push(material);
    }this.materials.push(row);}
    this.volume=new Mesh(new BoxGeometry(1,1,1),this.materials[0][0]);this.volume.scale.set(.16,.32,.16);this.volume.position.y=.16;this.scene.add(this.volume);
@@ -53,7 +53,7 @@ export class WebGpuFireScene {
  setCutaway(value:boolean){this.cut.value=Number(value)}
  setRange(value:number){this.scale.value=value}
  view(name:string){this.camera.position.set(...(name==='side'?[0,.16,.55]:name==='top'?[.001,.7,.001]:[.38,.24,.48]) as [number,number,number]);this.controls.target.set(0,.15,0);this.controls.update()}
- render(){if(this.disposed||document.hidden)return;this.controls.update();this.volume.updateMatrixWorld();this.eye.value.copy(this.volume.worldToLocal(this.camera.position.clone()));this.volume.material=this.materials[this.engine.state][this.engine.velocity];this.arrows.material=this.arrowMaterials[this.engine.velocity];this.engine.renderer.render(this.scene,this.camera)}
+ render(){if(this.disposed||document.hidden)return;this.ambient.value=this.engine.currentAmbient;this.controls.update();this.volume.updateMatrixWorld();this.eye.value.copy(this.volume.worldToLocal(this.camera.position.clone()));this.volume.material=this.materials[this.engine.state][this.engine.velocity];this.arrows.material=this.arrowMaterials[this.engine.velocity];this.engine.renderer.render(this.scene,this.camera)}
  private async pick(e:PointerEvent){
    // Probe on the vertical central section; reported coordinates are cell centres.
    const box=this.host.getBoundingClientRect();const ray=new Raycaster();ray.setFromCamera(new Vector2((e.clientX-box.left)/box.width*2-1,-(e.clientY-box.top)/box.height*2+1),this.camera);

@@ -1,6 +1,6 @@
 import {test,expect} from '@playwright/test';
 import {writeFileSync,mkdirSync} from 'node:fs';
-test('native 32×32×64 stability, energy budget and timed trials',async({page})=>{
+test('benchmark native 32×32×64 stability, energy budget and timed trials',async({page})=>{
  test.setTimeout(5400000);
  await page.goto('/tests/gpu/harness.html');await page.waitForFunction(()=>!!(window as any).lab);
  page.on('console',m=>{if(m.text().startsWith('CHECKPOINT ')){mkdirSync('artifacts/gpu',{recursive:true});writeFileSync('artifacts/gpu/checkpoint.json',m.text().slice(11));console.log(m.text());}});

@@ -1,0 +1,2 @@
+# Preserve the upstream mechanism byte-for-byte, including on Windows checkouts.
+src/gpu/chemistry/data/gri30.yaml -text

@@ -73,9 +73,9 @@ $('#app').innerHTML=`
 
 // Separate cached rendering engines retain their own camera and physical time.
 const engineSwitch=document.createElement('div');engineSwitch.className='engine-switch';engineSwitch.setAttribute('aria-label','Silnik demonstracji');
-engineSwitch.innerHTML='<button id="mode-fds" aria-pressed="true">FDS Scientific</button><button id="mode-gpu" aria-pressed="false">GPU Interactive <small>1.3</small></button>';
+engineSwitch.innerHTML='<button id="mode-fds" aria-pressed="true">FDS Scientific</button><button id="mode-gpu" aria-pressed="false">GPU Interactive <small>CFD</small></button>';
 $('.workspace').before(engineSwitch);const gpuRoot=document.createElement('section');gpuRoot.id='gpu-laboratory';gpuRoot.hidden=true;$('.workspace').after(gpuRoot);
-const gpuEngineLabel=document.createElement('span');gpuEngineLabel.id='gpu-engine-label';gpuEngineLabel.textContent='GPU Interactive · gpu-flow-0.1';$('#engine-label').after(gpuEngineLabel);
+const gpuEngineLabel=document.createElement('span');gpuEngineLabel.id='gpu-engine-label';gpuEngineLabel.textContent='GPU Interactive · gpu-flow-0.2';$('#engine-label').after(gpuEngineLabel);
 async function switchEngine(value:boolean){
  gpuActive=value;document.body.classList.toggle('gpu-mode',value);gpuRoot.hidden=!value;fire?.setActive(!value);lastTick=performance.now();
  $('#mode-fds').setAttribute('aria-pressed',String(!value));$('#mode-gpu').setAttribute('aria-pressed',String(value));gpuLab?.activate(value);

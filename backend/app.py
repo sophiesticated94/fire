@@ -82,7 +82,10 @@ def preview_manifest(ident: str):
     if not path.exists(): raise HTTPException(409,'Pierwsze klatki nie są jeszcze gotowe')
     # Capture one immutable byte snapshot. FileResponse stats then opens the
     # pathname later; atomic replacement could change its Content-Length.
-    return Response(path.read_bytes(),media_type='application/json',headers={'Cache-Control':'no-store'})
+    from .progressive import snapshot_bytes
+    try: payload=snapshot_bytes(path)
+    except (PermissionError,FileNotFoundError): raise HTTPException(503,'Publikacja podglądu w toku',headers={'Retry-After':'1'})
+    return Response(payload,media_type='application/json',headers={'Cache-Control':'no-store'})
 
 
 @app.get('/api/experiments/{ident}/preview/frames/{frame}')
@@ -92,7 +95,9 @@ def preview_frame(ident: str, frame: int, attempt: str):
     except KeyError: raise HTTPException(404,'Nie znaleziono próby')
     manifest=folder/'preview/manifest.json'
     if not manifest.exists(): raise HTTPException(409,'Podgląd nie jest gotowy')
-    meta=json.loads(manifest.read_text(encoding='utf-8'))
+    from .progressive import snapshot_bytes
+    try: meta=json.loads(snapshot_bytes(manifest))
+    except (PermissionError,FileNotFoundError): raise HTTPException(503,'Publikacja podglądu w toku',headers={'Retry-After':'1'})
     if frame>=len(meta['times']): raise HTTPException(404,'Klatka nie została opublikowana')
     path=folder/'preview/frames'/f'{frame:05d}.bin'
     if not path.is_file(): raise HTTPException(404,'Brak klatki')

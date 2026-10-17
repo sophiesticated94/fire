@@ -1,0 +1,17 @@
+{
+  "source": "Cantera v3.2.0/data/gri30.yaml",
+  "url": "https://github.com/Cantera/cantera/blob/v3.2.0/data/gri30.yaml",
+  "sha256": "06650b1e0ee0012f6903d5328b1bb218cb6007d07f8ebe375d18f24811039345",
+  "cantera": "3.2.0",
+  "species": 53,
+  "reactions": 325,
+  "kinds": {
+    "three-body-Arrhenius": 21,
+    "Arrhenius": 275,
+    "falloff-Lindemann": 3,
+    "falloff-Troe": 26
+  },
+  "stride": 112,
+  "units": "m, s, kg, kmol, J, K; Arrhenius A converted by Cantera; Ea/R in K",
+  "normalization": "RHS uses Y/sum(Y); Jacobian differentiates this normalization at fixed pressure"
+}

@@ -18,6 +18,17 @@ SMV_COORD_ATOL=5.1e-6
 class MeshGeometryError(ValueError):
     """Complete mesh metadata contradicts the declared numerical grid."""
 
+
+def snapshot_bytes(path):
+    """A complete publication, including Windows' short delete-pending window."""
+    for attempt in range(20):
+        try:
+            return path.read_bytes()
+        except (PermissionError, FileNotFoundError):
+            if attempt == 19:
+                raise
+            time.sleep(.025)
+
 def atomic_json(path,data):
     temporary=path.with_suffix(path.suffix+'.pending')
     temporary.write_text(json.dumps(data,ensure_ascii=False),encoding='utf-8')

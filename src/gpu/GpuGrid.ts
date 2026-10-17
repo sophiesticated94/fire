@@ -1,12 +1,19 @@
 export const AIR={p:101325,R:287.05,cp:1005,T:293.15,mu:1.81e-5,k:.0257,g:9.81};
-export interface GpuFlowConfig {power:number;wind:number}
-export interface GridOptions {cells?:[number,number,number];mu?:number;k?:number;gravity?:number;testReadback?:boolean}
+export interface GpuFlowConfig {power:number;wind:number;ambient:number;gravity:number;viscosity:number;thermalConductivity:number}
+export interface GridOptions {cells?:[number,number,number];mu?:number;k?:number;gravity?:number;testReadback?:boolean;ambient?:number;pressureMode?:'reference'|'batched'}
+// Measured on the target RTX 4050; other devices/grids retain the reference.
+// The reference remains explicitly selectable for regression and benchmarking.
+export function defaultPressureMode(adapter:{vendor:string;device:string},cells:readonly number[]){
+  return adapter.vendor==='nvidia'&&adapter.device==='0x28a1'&&cells.join(',')==='32,32,64'?'batched' as const:'reference' as const;
+}
 export class GpuGrid {
   cells:[number,number,number];size:[number,number,number]=[.16,.16,.32];h:number[];count:number;faces:number;offsets:number[];weights:Float32Array;normalization:number;
   constructor(public options:GridOptions={}){
     this.cells=[...(options.cells??[32,32,64])] as [number,number,number];
     if(this.cells.length!==3||this.cells.some(n=>!Number.isInteger(n)||n<4||n>64))throw Error('Niepoprawna siatka GPU');
     if([options.mu??AIR.mu,options.k??AIR.k,options.gravity??AIR.g].some(v=>!Number.isFinite(v)||v<0))throw Error('Niepoprawne właściwości powietrza');
+    if(!Number.isFinite(options.ambient??20)||(options.ambient??20)<0||(options.ambient??20)>50)throw Error('Temperatura otoczenia poza zakresem 0–50 °C');
+    if(options.pressureMode!==undefined&&!['reference','batched'].includes(options.pressureMode))throw Error('Nieznany wariant projekcji ciśnienia');
     const [x,y,z]=this.cells;this.count=x*y*z;this.h=this.size.map((s,i)=>s/this.cells[i]);
     this.offsets=[0,(x+1)*y*z,(x+1)*y*z+x*(y+1)*z];this.faces=this.offsets[2]+x*y*(z+1);
     this.weights=new Float32Array(this.count);let sum=0;
@@ -18,14 +25,15 @@ export class GpuGrid {
     this.normalization=sum;
   }
   get volume(){return this.h.reduce((a,b)=>a*b,1)}
-  get ambientDensity(){return AIR.p/(AIR.R*AIR.T)}
+  ambientKelvin=AIR.T;
+  get ambientDensity(){return AIR.p/(AIR.R*this.ambientKelvin)}
   index(i:number,j:number,k:number){return (k*this.cells[1]+j)*this.cells[0]+i}
   faceIndex(a:number,i:number,j:number,k:number){const d=this.cells.map((n,b)=>n+Number(a===b));return this.offsets[a]+(k*d[1]+j)*d[0]+i}
   wgsl(){const [x,y,z]=this.cells;return `
 const N=vec3i(${x},${y},${z}); const H=vec3f(${this.h.map(v=>v.toPrecision(12)).join(',')});
 const NC:u32=${this.count}u; const NF:u32=${this.faces}u; const DV:f32=${this.volume.toPrecision(12)};
-const R0:f32=${this.ambientDensity.toPrecision(12)}; const T0:f32=293.15; const GAS:f32=287.05; const P0:f32=101325.; const CP:f32=1005.;
-const MU:f32=${(this.options.mu??AIR.mu).toExponential()}; const KT:f32=${(this.options.k??AIR.k).toExponential()}; const GRAV:f32=${(this.options.gravity??AIR.g).toFixed(8)};
+var<private> R0:f32; var<private> T0:f32; var<private> GRAV:f32; var<private> MU:f32; var<private> KT:f32; var<private> TREF:f32; var<private> BATH:f32;
+const GAS:f32=287.05; const P0:f32=101325.; const CP:f32=1005.;
 const WN:f32=${this.normalization.toPrecision(12)};
 fn cell(q:vec3i)->u32 {let p=clamp(q,vec3i(0),N-vec3i(1));return u32((p.z*N.y+p.y)*N.x+p.x);}
 fn xyz(id:u32)->vec3i{return vec3i(i32(id)%N.x,(i32(id)/N.x)%N.y,i32(id)/(N.x*N.y));}

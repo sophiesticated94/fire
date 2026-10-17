@@ -21,3 +21,14 @@ test('running GPU suspends in FDS and resumes without wall-clock catch-up',async
  await page.click('#mode-fds');await expect(page.locator('#gpu-laboratory')).toHaveAttribute('data-busy','false',{timeout:15000});const time=await page.locator('#gpu-time').textContent();await page.waitForTimeout(800);expect(await page.locator('#gpu-time').textContent()).toBe(time);
  await page.click('#mode-gpu');await expect.poll(()=>page.locator('#gpu-time').textContent()).not.toBe(time);
 });
+
+test('live environment controls expose valid defaults and update the next step',async({page})=>{
+ await page.goto('/');await page.click('#mode-gpu');await expect(page.locator('#gpu-step')).toBeEnabled({timeout:30000});
+ await page.locator('.gpu-advanced summary').click();
+ for(const id of ['gpu-gravity','gpu-viscosity','gpu-conductivity'])expect(await page.locator('#'+id).evaluate((el:HTMLInputElement)=>el.checkValidity())).toBe(true);
+ await page.locator('#gpu-gravity').fill('0');await page.locator('#gpu-viscosity').fill('0');await page.locator('#gpu-conductivity').fill('0');
+ await page.locator('#gpu-ambient').fill('50');await page.locator('#gpu-wind').fill('0.6');
+ await page.click('#gpu-step');await expect.poll(()=>page.locator('#gpu-time').textContent(),{timeout:30000}).not.toBe('0,00 s');
+ await expect(page.locator('#gpu-diagnostics')).toContainText('→ 50,00');await expect(page.locator('#gpu-error')).toBeHidden();
+ await page.screenshot({path:'artifacts/gpu/environment-controls.png',fullPage:true});
+});

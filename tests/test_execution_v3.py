@@ -384,3 +384,18 @@ def test_partial_campaign_summarizes_completed_screens_without_finalists():
     c.state=dict(runs=[record]);calls=[];c.screen_score=lambda r:calls.append(r);c.save=lambda:None
     c.summarize()
     assert calls==[record] and c.state['summaries']==[]
+
+
+def test_manifest_snapshot_retries_transient_windows_publication(monkeypatch,tmp_path):
+    from backend.progressive import snapshot_bytes
+    path=tmp_path/'manifest.json'
+    path.write_bytes(b'{"revision":2}')
+    original=Path.read_bytes
+    attempts=[]
+    def read(candidate):
+        if candidate==path and len(attempts)<2:
+            attempts.append(True)
+            raise PermissionError('delete pending')
+        return original(candidate)
+    monkeypatch.setattr(Path,'read_bytes',read)
+    assert snapshot_bytes(path)==b'{"revision":2}' and len(attempts)==2

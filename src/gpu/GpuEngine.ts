@@ -2,7 +2,7 @@
 import {WebGPURenderer,Vector4} from 'three/webgpu';
 import {wgslFn,uniform,instanceIndex,uint} from 'three/tsl';
 import type {ComputeNode} from 'three/webgpu';
-import {GpuGrid,AIR,type GridOptions,type GpuFlowConfig} from './GpuGrid';
+import {GpuGrid,AIR,defaultPressureMode,type GridOptions,type GpuFlowConfig} from './GpuGrid';
 import {GpuFields,Field} from './GpuFields';
 import {finite,type GpuStepDiagnostics} from './GpuDiagnostics';
 import thermal from './shaders/thermal.wgsl?raw';
@@ -14,26 +14,31 @@ import project from './shaders/project.wgsl?raw';
 import residual from './shaders/residual.wgsl?raw';
 import reduce from './shaders/reduce.wgsl?raw';
 import diagnostics from './shaders/diagnostics.wgsl?raw';
+import convergence from './shaders/convergence.wgsl?raw';
 
 export class GpuEngine {
   readonly timingScheme='per-pass-step-sum';
-  readonly model='gpu-flow-0.1';grid:GpuGrid;fields:GpuFields;config:GpuFlowConfig={power:1,wind:0};
+  readonly model='gpu-flow-0.2';grid:GpuGrid;fields:GpuFields;config:GpuFlowConfig={power:1,wind:0,ambient:20,gravity:AIR.g,viscosity:AIR.mu,thermalConductivity:AIR.k};
   state=0;velocity=0;time=0;steps=0;readbackBytes=0;fullReadbacks=0;paused=true;disposed=false;busy=false;error='';
   adapter:Record<string,unknown>={};metrics?:GpuStepDiagnostics;onMetrics?:(m:GpuStepDiagnostics)=>void;onError?:(error:string)=>void;
   readonly par=uniform(new Vector4(1/120,1,0,0));private kernels=new Map<string,ComputeNode>();private dirty=true;private pendingConfig=false;
+  readonly environment=uniform(new Vector4(AIR.T,AIR.p/(AIR.R*AIR.T),AIR.g,0));
+  readonly properties=uniform(new Vector4(AIR.mu,AIR.k,AIR.T,0));
+  currentAmbient=AIR.T;private ambientRate=0;private referenceTemperature=AIR.T;private environmentEnergy=0;
   private device?:GPUDevice;private mass0=0;private energy0=0;private massIntegral=0;private energyIntegral=0;private lastMass=0;private lastEnergy=0;
   private accumulator=0;private lastFrame=0;private iterations=0;private timestamps=false;
   private appliedWind=0;
   private windDelta=uniform(0);private revision=0;private stepConfig?:GpuFlowConfig;suspended=false;
-  private timestampIds:string[]=[];
+  private timestampIds:string[]=[];private pressureReadbacks=0;private pressureWallMs=0;
   private deviceLost=false;
   private pendingProbe?:{index:number;resolve:(values:number[]|undefined)=>void};
-  private constructor(public renderer:WebGPURenderer,options:GridOptions){this.grid=new GpuGrid(options);this.fields=new GpuFields(this.grid)}
+  private constructor(public renderer:WebGPURenderer,options:GridOptions){this.grid=new GpuGrid(options);this.fields=new GpuFields(this.grid);this.config={...this.config,ambient:options.ambient??20,gravity:options.gravity??AIR.g,viscosity:options.mu??AIR.mu,thermalConductivity:options.k??AIR.k};}
   static async create(options:GridOptions={}){
     new GpuGrid(options); // Validate before allocating a GPU device.
     if(!navigator.gpu)throw Error('Ta przeglądarka nie udostępnia WebGPU. Ścieżka FDS pozostaje dostępna.');
     const adapter=await navigator.gpu.requestAdapter({powerPreference:'high-performance'});
     if(!adapter)throw Error('Brak dostępnego adaptera WebGPU. Otwórz IGNIS w Chrome lub Edge z akceleracją sprzętową.');
+    options={...options,pressureMode:options.pressureMode??defaultPressureMode(adapter.info,options.cells??[32,32,64])};
     if(adapter.limits.maxStorageBuffersPerShaderStage<8)throw Error('Adapter ma za mało buforów storage (wymagane 8).');
     const features:GPUFeatureName[]=[];if(adapter.features.has('timestamp-query'))features.push('timestamp-query');
     if(adapter.features.has('core-features-and-limits'))features.push('core-features-and-limits');
@@ -51,13 +56,15 @@ export class GpuEngine {
       await engine.reset();return engine;
     }catch(e){engine.dispose();throw e;}
   }
+  get computeDevice(){if(!this.device)throw Error('GPU device unavailable');return this.device;}
   get rho(){return this.fields.rho[this.state]}
   get flow(){return this.fields.velocity[this.velocity]}
   private kernel(key:string,source:string,count:number,args:Record<string,unknown>){
     if(!this.kernels.has(key)){
-      const fn=wgslFn(source+'\n'+this.grid.wgsl());
+      const entry=source.replace(')->void {',',environment:vec4f,properties:vec4f)->void { R0=environment.y;T0=environment.x;GRAV=environment.z;BATH=environment.w;MU=properties.x;KT=properties.y;TREF=properties.z;');
+      const fn=wgslFn(entry+'\n'+this.grid.wgsl());
       // Three's function-node typing cannot express arbitrary WGSL pointer arguments.
-      const node=fn({id:instanceIndex,group:instanceIndex,slot:instanceIndex,...args} as never).compute(count,[64]);
+      const node=fn({id:instanceIndex,group:instanceIndex,slot:instanceIndex,environment:this.environment,properties:this.properties,...args} as never).compute(count,[64]);
       node.name=key;this.kernels.set(key,node);
     }
     return this.kernels.get(key)!;
@@ -69,27 +76,37 @@ export class GpuEngine {
   private run(key:string,code:string,count:number,args:Record<string,unknown>){this.dispatch(this.kernel(key,code,count,args))}
   private async read(field:Field){const data=await this.renderer.getArrayBufferAsync(field.attribute);if(this.error)throw Error(this.error);this.readbackBytes+=field.count*4;const a=new Float32Array(data as ArrayBuffer);finite(a);return a;}
   setParameters(change:Partial<GpuFlowConfig>){
-    const next={...this.config,...change};if(!Number.isFinite(next.power)||next.power<0||next.power>2||!Number.isFinite(next.wind)||next.wind<0||next.wind>.1)throw Error('Parametry GPU poza zakresem');
-    if(next.power===this.config.power&&next.wind===this.config.wind)return;
+    const next={...this.config,...change};
+    const ranges:Record<keyof GpuFlowConfig,[number,number]>={power:[0,2],wind:[0,.6],ambient:[0,50],gravity:[0,20],viscosity:[0,5e-5],thermalConductivity:[0,.1]};
+    for(const key of Object.keys(ranges) as (keyof GpuFlowConfig)[]){const [min,max]=ranges[key];if(!Number.isFinite(next[key])||next[key]<min||next[key]>max)throw Error('Parametry GPU poza zakresem: '+key);}
+    if((Object.keys(ranges) as (keyof GpuFlowConfig)[]).every(key=>next[key]===this.config[key]))return;
     this.config=next;this.revision++;this.pendingConfig=true;this.dirty=true;
   }
-  private uniforms(dt:number){const c=this.stepConfig??this.config;this.par.value.set(dt,c.power,c.wind,0)}
+  private uniforms(dt:number){const c=this.stepConfig??this.config;this.par.value.set(dt,c.power,c.wind,0);this.environment.value.set(this.currentAmbient,AIR.p/(AIR.R*this.currentAmbient),c.gravity,this.ambientRate);this.properties.value.set(c.viscosity,c.thermalConductivity,this.referenceTemperature,0)}
   private thermal(r:Field,v:Field){this.run(`thermal-${this.fields.rho.indexOf(r)}-${this.fields.velocity.indexOf(v)}`,thermal,this.grid.count,{r:r.node,v:v.node,s:this.fields.source.node,par:this.par})}
   private async solve(r:Field,v:Field,dest:Field){
+    const pressureStart=performance.now();
     const f=this.fields,n=this.grid.count,groups=Math.ceil(n/64);
     const key=`${this.fields.rho.indexOf(r)}-${this.fields.velocity.indexOf(v)}-${this.fields.velocity.indexOf(dest)}`;
     this.run('rhs-'+key,divergence,n,{v:v.node,s:f.source.node,rhs:f.rhs.node});
-    const red=this.kernel('red-'+key,pressure,n,{r:r.node,rhs:f.rhs.node,p:f.pressure.node,colour:uint(0)});
-    const black=this.kernel('black-'+key,pressure,n,{r:r.node,rhs:f.rhs.node,p:f.pressure.node,colour:uint(1)});
+    this.run('clear-convergence',`fn clear(id:u32,m:ptr<storage,array<f32>,read_write>)->void {if(id==0u){(*m)[24]=0.;(*m)[25]=0.;}}`,1,{m:f.metrics.node});
+    const red=this.kernel('red-'+key,pressure,n,{r:r.node,rhs:f.rhs.node,p:f.pressure.node,m:f.metrics.node,colour:uint(0)});
+    const black=this.kernel('black-'+key,pressure,n,{r:r.node,rhs:f.rhs.node,p:f.pressure.node,m:f.metrics.node,colour:uint(1)});
+    const residualNode=this.kernel('residual-'+key,residual,groups,{r:r.node,rhs:f.rhs.node,p:f.pressure.node,s:f.source.node,out:f.chunks.node,m:f.metrics.node});
+    const reduction=this.kernel('reduce-pressure',reduce,24,{parts:f.chunks.node,out:f.metrics.node,mode:uint(0)});
+    const check=this.kernel('convergence',convergence,1,{m:f.metrics.node});
+    const batched=this.grid.options.pressureMode==='batched';
     let it=0,converged=false;
-    for(;it<1024;){
-      this.dispatch(Array.from({length:16},()=>[red,black]).flat());it+=16;
-      this.run('residual-'+key,residual,groups,{r:r.node,rhs:f.rhs.node,p:f.pressure.node,s:f.source.node,out:f.chunks.node});
-      this.run('reduce-pressure',reduce,24,{parts:f.chunks.node,out:f.metrics.node,mode:uint(0)});
-      const m=await this.read(f.metrics);const rms=Math.sqrt(m[0]/n),rhs=Math.sqrt(m[1]/n);
+    while(it<1024){
+      const nodes:ComputeNode[]=[];const blocks=batched?Math.min(4,(1024-it)/16):1;
+      for(let block=0;block<blocks;block++){for(let j=0;j<16;j++)nodes.push(red,black);nodes.push(residualNode,reduction);if(batched)nodes.push(check);}
+      this.dispatch(nodes);
+      const m=await this.read(f.metrics);this.pressureReadbacks++;it=batched?m[25]:it+16;
+      const rms=Math.sqrt(m[0]/n),rhs=Math.sqrt(m[1]/n);
       if(rms<=Math.max(1e-4,1e-3*rhs)&&Math.abs(m[2])<=.01*Math.max(m[3],1e-8)){converged=true;break;}
+      if(batched&&m[24])this.run('resume-convergence',`fn resume(id:u32,m:ptr<storage,array<f32>,read_write>)->void {if(id==0u){(*m)[24]=0.;}}`,1,{m:f.metrics.node});
     }
-    this.iterations+=it;
+    this.iterations+=it;this.pressureWallMs+=performance.now()-pressureStart;
     if(!converged)throw Error('Projekcja ciśnienia nie osiągnęła zbieżności (1024 iteracje).');
     this.run('project-'+key,project,this.grid.faces,{r:r.node,v:v.node,p:f.pressure.node,out:dest.node});
   }
@@ -118,24 +135,51 @@ export class GpuEngine {
     if(this.deviceLost)throw Error('Urządzenie GPU utracone. Odśwież aplikację.');
     this.busy=true;
     try{
-    this.time=0;this.steps=0;this.error='';this.paused=true;this.accumulator=0;this.mass0=0;this.massIntegral=0;this.energyIntegral=0;this.state=0;this.velocity=0;this.iterations=0;
+    this.currentAmbient=this.config.ambient+273.15;this.grid.ambientKelvin=this.currentAmbient;this.referenceTemperature=this.currentAmbient;this.ambientRate=0;this.environmentEnergy=0;
+    this.time=0;this.steps=0;this.error='';this.paused=true;this.accumulator=0;this.mass0=0;this.massIntegral=0;this.energyIntegral=0;this.state=0;this.velocity=0;this.iterations=0;this.pressureReadbacks=0;this.pressureWallMs=0;
     for(const f of this.fields.all()){(f.attribute.array as Float32Array).fill(0);f.attribute.needsUpdate=true;}
     for(const r of this.fields.rho){(r.attribute.array as Float32Array).fill(this.grid.ambientDensity);r.attribute.needsUpdate=true;}
     for(const v of this.fields.velocity){(v.attribute.array as Float32Array).fill(0);const d=this.grid.cells;for(let k=0;k<d[2];k++)for(let j=0;j<d[1];j++)for(let i=0;i<=d[0];i++)(v.attribute.array as Float32Array)[this.grid.faceIndex(0,i,j,k)]=this.config.wind;v.attribute.needsUpdate=true;}
     this.appliedWind=this.config.wind;this.dirty=true;const m=await this.prepare();this.publish(m,0,0,null);
     }catch(e){this.fail((e as Error).message);throw e;}finally{this.busy=false;}
   }
+  private backups:Field[]=[];
+  private copySnapshot(restore=false){
+    const fields=this.fields.all();if(!this.backups.length)this.backups=fields.map(f=>new Field(f.count));
+    const nodes=fields.map((f,i)=>this.kernel(`${restore?'restore':'save'}-${i}`,`fn copy(id:u32,src:ptr<storage,array<f32>,read_write>,dst:ptr<storage,array<f32>,read_write>,count:u32)->void {if(id<count){(*dst)[id]=(*src)[id];}}`,f.count,{src:(restore?this.backups[i]:f).node,dst:(restore?f:this.backups[i]).node,count:uint(f.count)}));
+    this.dispatch(nodes);
+  }
+  private snapshotMeta(){return {state:this.state,velocity:this.velocity,time:this.time,steps:this.steps,mass0:this.mass0,energy0:this.energy0,massIntegral:this.massIntegral,energyIntegral:this.energyIntegral,lastMass:this.lastMass,lastEnergy:this.lastEnergy,appliedWind:this.appliedWind,dirty:this.dirty,pendingConfig:this.pendingConfig,metrics:this.metrics,iterations:this.iterations,currentAmbient:this.currentAmbient,ambientRate:this.ambientRate,referenceTemperature:this.referenceTemperature,environmentEnergy:this.environmentEnergy,windUniform:this.windDelta.value,uniforms:[this.par.value.toArray(),this.environment.value.toArray(),this.properties.value.toArray()]};}
+  private restoreMeta(saved:ReturnType<GpuEngine['snapshotMeta']>){
+    const {uniforms,windUniform,...state}=saved;Object.assign(this,state);this.windDelta.value=windUniform;this.par.value.fromArray(uniforms[0]);this.environment.value.fromArray(uniforms[1]);this.properties.value.fromArray(uniforms[2]);
+  }
   async step(maxDt=1/120){
     if(!Number.isFinite(maxDt)||maxDt<=0)throw Error('Krok czasu musi być dodatni');
     if(this.disposed||this.busy)throw Error('Silnik GPU nie jest gotowy');if(this.error)throw Error(this.error);
-    this.busy=true;this.timestampIds=[];this.stepConfig={...this.config};const start=performance.now();this.iterations=0;
+    const saved=this.snapshotMeta(),revision=this.revision;let snapshotReady=false;
+    this.busy=true;this.timestampIds=[];this.pressureReadbacks=0;this.pressureWallMs=0;this.stepConfig={...this.config};const start=performance.now();this.iterations=0;
     try{
-      let initial=this.dirty?await this.prepare():await this.stats(this.rho,this.flow);
-      const h=this.grid.h;let dt=Math.min(maxDt,1/120,.5/Math.max(initial[12],1e-8),.05/Math.max(initial[21],1e-8));
-      const alpha=Math.max(this.grid.options.mu??AIR.mu,(this.grid.options.k??AIR.k)/AIR.cp)*initial[7];
-      dt=Math.min(dt,.45/(2*alpha*h.reduce((a,x)=>a+1/(x*x),0)));
-      const old=this.rho,transport=this.flow;const next=this.fields.rho[1-this.state];const vi=(this.velocity+1)%3,oi=(this.velocity+2)%3;
-      for(let trial=0;trial<4;trial++,dt*=.5){
+      this.copySnapshot();snapshotReady=true;
+      let dt=Math.min(maxDt,1/120);
+      for(let trial=0;trial<4;trial++){
+        if(trial){this.copySnapshot(true);this.restoreMeta(saved);this.iterations=0;}
+        const prepareEnvironment=()=>{
+          const delta=this.stepConfig!.ambient+273.15-saved.currentAmbient;
+          const rate=Math.max(-10,Math.min(10,delta/dt));if(rate!==this.ambientRate)this.dirty=true;this.ambientRate=rate;
+          this.currentAmbient=saved.currentAmbient+this.ambientRate*dt;
+          if(this.ambientRate||this.revision!==revision)this.dirty=true;
+          this.uniforms(dt);
+        };
+        prepareEnvironment();
+        let initial=this.dirty?await this.prepare():await this.stats(this.rho,this.flow);
+        const h=this.grid.h,c=this.stepConfig!;
+        const alpha=Math.max(c.viscosity,c.thermalConductivity/AIR.cp)*initial[7];
+        const constrained=Math.min(dt,.5/Math.max(initial[12],1e-8),.05/Math.max(initial[21],1e-8),.45/(2*alpha*h.reduce((a,x)=>a+1/(x*x),0)));
+        if(constrained<dt*(1-1e-7)){
+          dt=constrained;this.copySnapshot(true);this.restoreMeta(saved);this.iterations=0;prepareEnvironment();
+          initial=this.dirty?await this.prepare():await this.stats(this.rho,this.flow);
+        }
+        const old=this.rho,transport=this.flow,next=this.fields.rho[1-this.state];const vi=(this.velocity+1)%3,oi=(this.velocity+2)%3;
         this.uniforms(dt);this.run(`advect-${this.state}-${this.velocity}`,advect,this.grid.count,{r:old.node,v:transport.node,out:next.node,par:this.par});
         this.run(`momentum-${this.state}-${this.velocity}`,momentum,this.grid.faces,{r:old.node,next:next.node,v:transport.node,out:this.fields.velocity[vi].node,par:this.par});
         // New thermodynamic state supplies the expansion target for the next transport.
@@ -143,7 +187,7 @@ export class GpuEngine {
         await this.solve(next,this.fields.velocity[vi],this.fields.velocity[oi]);
         const m=await this.stats(next,this.fields.velocity[oi],old,transport);
         if(m[13]||m[7]<=0||m[20]>1e-5||Math.hypot(m[9],m[10],m[11])/Math.sqrt(1.4*AIR.R*200)>=.1)throw Error('Stan gazu poza zakresem low-Mach (200–1000 K, Mach < 0,1, zgodność EOS).');
-        if(m[12]*dt>.5*(1+1e-5))continue;
+        if(m[12]*dt>.5*(1+1e-5)){dt*=.5;continue;}
         const urms=Math.sqrt(m[3]/this.grid.count);const chi=Math.min(...h)*Math.sqrt(m[2]/this.grid.count)/Math.max(.01,urms);
         const maxChi=Math.min(...h)*m[4]/Math.max(.01,urms);
         if(chi>1e-3||maxChi>1e-2)throw Error(`Błąd rozszerzalności GPU: ${chi.toExponential(2)}`);
@@ -151,7 +195,7 @@ export class GpuEngine {
         const massTotal=Math.abs(m[0]-this.mass0+this.massIntegral+dt*m[16])/this.mass0;
         if(massStep>1e-5||massTotal>1e-4)throw Error('Przekroczony błąd bilansu masy GPU.');
         if(Math.abs(m[19]-m[15])>.01*Math.max(m[22],1e-8))throw Error('Przekroczony błąd strumienia rozszerzalności GPU.');
-        this.massIntegral+=dt*m[16];
+        this.massIntegral+=dt*m[16];this.environmentEnergy+=dt*initial[23];
         // Use the old state's heater/conduction integral and the actual transport fluxes.
         this.energyIntegral+=dt*(m[17]-initial[15]*AIR.p*AIR.cp/AIR.R);
         this.state=1-this.state;this.velocity=oi;this.time+=dt;this.steps++;
@@ -165,11 +209,17 @@ export class GpuEngine {
         }
         this.publish(m,dt,performance.now()-start,gpuMs);
         this.lastMass=m[0];this.lastEnergy=m[1];
-        if(this.pendingConfig)this.dirty=true;
+        if(this.revision!==revision){this.pendingConfig=true;this.dirty=true;}
+        else if(this.pendingConfig)this.dirty=true;
         return this.metrics!;
       }
       throw Error('CFL przekroczone mimo czterech prób zmniejszenia kroku.');
-    }catch(e){this.fail((e as Error).message);throw e;}finally{
+    }catch(e){
+      let restoreError='';
+      try{if(snapshotReady&&!this.deviceLost)this.copySnapshot(true);}catch{restoreError=' Nie udało się przywrócić buforów GPU; wymagana ponowna inicjalizacja.';}
+      finally{this.restoreMeta(saved);if(this.revision!==revision){this.dirty=true;this.pendingConfig=true;}}
+      this.fail((e instanceof Error?e.message:String(e))+restoreError);throw e;
+    }finally{
       this.busy=false;this.stepConfig=undefined;
       const pending=this.pendingProbe;this.pendingProbe=undefined;
       if(pending){try{pending.resolve(this.error||this.disposed?undefined:await this.probeAt(pending.index));}catch{pending.resolve(undefined);}}
@@ -177,10 +227,10 @@ export class GpuEngine {
   }
   private publish(m:Float32Array,dt:number,wallMs:number,gpuMs:number|null){
     const n=this.grid.count,h=Math.min(...this.grid.h),urms=Math.sqrt(m[3]/n),norm=Math.max(.01,urms);
-    this.metrics={time:this.time,dt,steps:this.steps,iterations:this.iterations,mass:m[0],enthalpy:m[1],temperature:m[6]-273.15,densityMin:1/m[7],densityMax:m[8],speed:m[5],cfl:dt*m[12],
+    this.metrics={pressureReadbacks:this.pressureReadbacks,pressureWallMs:this.pressureWallMs,ambient:this.currentAmbient-273.15,targetAmbient:this.config.ambient,environmentEnergy:this.environmentEnergy,environmentPower:m[23],time:this.time,dt,steps:this.steps,iterations:this.iterations,mass:m[0],enthalpy:m[1],temperature:m[6]-273.15,densityMin:1/m[7],densityMax:m[8],speed:m[5],cfl:dt*m[12],
       divergenceRms:Math.sqrt(m[2]/n),divergenceMax:m[4],normalizedDivergence:h*Math.sqrt(m[2]/n)/norm,normalizedMaximum:h*m[4]/norm,
       expansionFluxError:Math.abs(m[19]-m[15])/Math.max(m[22],1e-8),massError:dt?Math.abs(m[0]-this.lastMass+dt*m[16])/this.mass0:0,
-      cumulativeMassError:Math.abs(m[0]-this.mass0+this.massIntegral)/this.mass0,energyError:m[1]-this.energy0+this.energyIntegral,heaterPower:m[14],gpuMs,wallMs,readbackBytes:this.readbackBytes,allocatedBytes:this.fields.bytes,adapter:this.adapter};
+      cumulativeMassError:Math.abs(m[0]-this.mass0+this.massIntegral)/this.mass0,energyError:m[1]-this.energy0+this.energyIntegral,heaterPower:m[14],gpuMs,wallMs,readbackBytes:this.readbackBytes,allocatedBytes:this.fields.bytes+this.backups.reduce((n,f)=>n+f.count*4,0),adapter:this.adapter};
     this.onMetrics?.(this.metrics);
   }
   async advance(now:number){
@@ -209,6 +259,13 @@ export class GpuEngine {
     }finally{this.busy=false;const pending=this.pendingProbe;this.pendingProbe=undefined;if(pending){try{pending.resolve(await this.probeAt(pending.index));}catch{pending.resolve(undefined);}}}
   }
   private probeIndex=uniform(uint(0));
+  async readStateForTest(){
+    if(!this.grid.options.testReadback||this.busy)throw Error('Snapshot dostępny tylko w spoczynku w testach');
+    this.copySnapshot();
+    this.fullReadbacks++;this.readbackBytes+=this.fields.bytes;
+    const fields=[];for(const f of this.fields.all())fields.push(Array.from(new Float32Array(await this.renderer.getArrayBufferAsync(f.attribute) as ArrayBuffer)));
+    return {fields,meta:this.snapshotMeta()};
+  }
   async readFieldsForTest(){if(!this.grid.options.testReadback)throw Error('Pełny odczyt pól dozwolony tylko w harnessie testowym');this.fullReadbacks++;return {rho:Array.from(await this.read(this.rho)),velocity:Array.from(await this.read(this.flow)),source:Array.from(await this.read(this.fields.source))}}
-  dispose(){if(this.disposed)return;this.disposed=true;this.paused=true;this.pendingProbe?.resolve(undefined);this.pendingProbe=undefined;for(const k of this.kernels.values())k.dispose();for(const f of this.fields.all())f.attribute.dispose();this.kernels.clear();this.renderer.dispose();this.device?.destroy();}
+  dispose(){if(this.disposed)return;this.disposed=true;this.paused=true;this.pendingProbe?.resolve(undefined);this.pendingProbe=undefined;for(const k of this.kernels.values())k.dispose();for(const f of [...this.fields.all(),...this.backups])f.attribute.dispose();this.kernels.clear();this.renderer.dispose();this.device?.destroy();}
 }

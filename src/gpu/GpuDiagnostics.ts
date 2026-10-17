@@ -1,4 +1,6 @@
 export interface GpuStepDiagnostics {
+  pressureReadbacks:number;pressureWallMs:number;
+  ambient:number;targetAmbient:number;environmentEnergy:number;environmentPower:number;
   time:number;dt:number;steps:number;iterations:number;mass:number;enthalpy:number;temperature:number;densityMin:number;densityMax:number;
   speed:number;cfl:number;divergenceRms:number;divergenceMax:number;normalizedDivergence:number;normalizedMaximum:number;
   expansionFluxError:number;massError:number;cumulativeMassError:number;energyError:number;heaterPower:number;

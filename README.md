@@ -4,6 +4,8 @@ Lokalna aplikacja po polsku: świeca, palnik metanowy i piroliza drewna. Rzeczyw
 
 **IGNIS 1.3:** przełącznik **GPU Interactive** otwiera osobny solver 3D gorącego powietrza na WebGPU. Grzałka i wiatr zmieniają przepływ podczas obliczeń; dostępne są temperatura, prędkość, gęstość i sonda. Ten etap nie obejmuje jeszcze spalania GPU. FDS zachowuje dotychczasową fizykę i wyniki. [Model, obsługa i testy GPU](docs/gpu-flow-0.1.md) · [Pomiary i odbiór](docs/benchmark-gpu-1.3.md).
 
+**Prace nad 1.4:** model `gpu-flow-0.2` dodaje sterowanie otoczeniem, grawitacją i właściwościami gazu podczas obliczeń, wiatr do 0,6 m/s, pełne cofanie nieudanego kroku oraz eksperymentalny batched SOR. [Opis i obsługa](docs/gpu-flow-0.2.md). Pełny GRI30 (53 składniki, 325 reakcji) ma własne kernele WGSL i referencje Cantery, ale **bramka reaktora pozostaje niezamknięta**. Palnik GPU nie został włączony. [Status chemii i odtworzenie testów](docs/gri30-status.md) · [Pomiary 1.4](docs/benchmark-gpu-1.4.md).
+
 ## Uruchomienie
 
 W PowerShell, w folderze projektu:

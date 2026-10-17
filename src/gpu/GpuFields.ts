@@ -10,7 +10,7 @@ export class GpuFields {
   constructor(public grid:GpuGrid){
     this.rho=[new Field(grid.count),new Field(grid.count)];this.velocity=[new Field(grid.faces),new Field(grid.faces),new Field(grid.faces)];
     this.pressure=new Field(grid.count);this.rhs=new Field(grid.count);this.source=new Field(grid.count*2);
-    this.chunks=new Field(Math.ceil(grid.count/64)*24);this.metrics=new Field(24);this.probe=new Field(8);
+    this.chunks=new Field(Math.ceil(grid.count/64)*24);this.metrics=new Field(32);this.probe=new Field(8);
   }
   all(){return [...this.rho,...this.velocity,this.pressure,this.rhs,this.source,this.chunks,this.metrics,this.probe]}
   get bytes(){return this.all().reduce((s,f)=>s+f.count*4,0)}

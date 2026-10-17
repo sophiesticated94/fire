@@ -8,8 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:e2e": "playwright test",
-    "test:gpu": "playwright test --config playwright.gpu.config.ts --grep-invert benchmark",
-    "test:gpu:benchmark": "playwright test --config playwright.gpu.config.ts benchmark.spec.ts"
+    "test:gpu": "playwright test --config playwright.gpu.config.ts --grep-invert \"benchmark|@chemistry-gate\"",
+    "test:gpu:benchmark": "playwright test --config playwright.gpu.config.ts benchmark.spec.ts",
+    "test:gpu:chemistry": "playwright test --config playwright.gpu.config.ts chemistry.spec.ts reactor.spec.ts",
+    "test:gpu:sor": "playwright test --config playwright.gpu.config.ts sor-benchmark.spec.ts"
   },
   "dependencies": {
     "@fontsource/cormorant-garamond": "5.2.8",
