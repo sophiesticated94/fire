@@ -108,6 +108,8 @@ Obliczenie przypadku z terminala:
 
 ## Zakres naukowy i licencje
 
+Eksperymentalna chemia IGNIS 1.4 ma osobną [instrukcję kampanii GRI30](docs/gri30-campaign.md): indywidualne kroki reaktorów na GPU, atomowe checkpointy, wspólny budżet 8 h i niezależna walidacja Cantery. [Raport odbioru](docs/chemistry-acceptance-1.4.md) oddziela testy infrastruktury od poprawności pełnych horyzontów. Palnik GPU pozostaje zablokowany do zaliczenia całej bramki.
+
 Przeczytaj [opis modelu i ograniczeń](docs/model.md). Jest to demonstracja edukacyjna oparta na CFD, bez deklaracji dokładności pomiarowej lub walidacji do zastosowań inżynierskich. N-heptan zastępuje pary świecy, a drewno korzysta z jawnie wskazanego przypadku weryfikacyjnego i uproszczonego modelu wilgoci. Utlenianie pozostałego żaru nie jest modelowane. Barwa i poświata są rekonstrukcją wizualną.
 
 [Raport weryfikacji](docs/verification.md) zawiera porównanie z oryginalnym eksporterem NIST, przypadki fizyczne, badanie dwóch siatek i ograniczenie automatycznej kontroli Smokeview. Gwiazdką w historii oznaczono główne przykłady; dodatkowe przebiegi kontrolne pozostają dostępne. Główne przykłady receptury 1.0.2 zawierają rzeczywiste pola zapisywane z częstotliwością 10 Hz.

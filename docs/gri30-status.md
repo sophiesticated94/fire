@@ -2,6 +2,8 @@
 
 **Etap badawczy nie został odebrany. Palnik GPU nie jest włączony.** Kod chemii jest używany przez laboratorium testowe, nie przez produkcyjny solver gorącego powietrza. Nie zastosowano mechanizmu zastępczego ani danych HRR z FDS.
 
+Nowy integrator GPU, checkpointy i harmonogram do 65 536 reaktorów są opisane w [instrukcji kampanii](gri30-campaign.md). Referencyjny prototyp opisany poniżej pozostaje dostępny. Krótki test 513 reaktorów sprawdza harmonogram, a nie pełne horyzonty skalowania. Bieżący raport odbioru znajduje się w [chemistry-acceptance-1.4.md](chemistry-acceptance-1.4.md).
+
 ## Mechanizm i implementacja
 
 Przypięto pełny [Cantera 3.2.0 gri30.yaml](https://github.com/Cantera/cantera/blob/v3.2.0/data/gri30.yaml), wraz z oryginalnym nagłówkiem, pochodzeniem, licencją pakietu i SHA256:
@@ -29,11 +31,11 @@ tools/chemistry-venv/Scripts/python scripts/generate_gri30.py
 tools/chemistry-venv/Scripts/python scripts/generate_reactor_references.py
 tools/chemistry-venv/Scripts/python scripts/chemistry_conditioning.py
 $env:IGNIS_GPU_ADAPTER='rtx'
-npm run test:gpu:chemistry
+npm run test:gpu:chemistry:reference
 tools/chemistry-venv/Scripts/python scripts/compare_gpu_reactor.py
 ```
 
-Test akceptacyjny **pozostaje czerwony**, jeżeli prototyp nie ukończy horyzontu. Limit pojedynczej próby wynosi 180 s czasu ściennego; jest ograniczeniem eksperymentu, nie fizycznym kryterium zgodności ani dowodem niemożliwości WebGPU. Nie zmniejszamy wymaganego horyzontu na potrzeby uzyskania PASS. Zwykłe `test:gpu` sprawdza stabilny przepływ i punktową kinetykę; osobna komenda chemii uruchamia również tę bramkę.
+Test akceptacyjny **pozostaje czerwony**, jeżeli prototyp nie ukończy horyzontu. Limit pojedynczej próby wynosi 180 s czasu ściennego; jest ograniczeniem eksperymentu, nie fizycznym kryterium zgodności ani dowodem niemożliwości WebGPU. Nie zmniejszamy wymaganego horyzontu na potrzeby uzyskania PASS. Zwykłe `test:gpu` sprawdza stabilny przepływ, punktową kinetykę i infrastrukturę. `test:gpu:chemistry:reference` zachowuje historyczną próbę prototypu; aktualne `test:gpu:chemistry` wymaga nowej, pełnej kampanii i nie może zakończyć się PASS na podstawie jednego krótkiego reaktora.
 
 Niezależne referencje obejmują mieszaniny CH₄/powietrze przy φ=0,5/1/2, 1000 K przez 10 s, 1200 K przez 2 s i 1500 K przez 0,5 s oraz zimny przypadek 500 K przez 1 s. Początkowe rodniki wynoszą zero. Cantera używa `rtol=1e-10`, `atol=1e-20`; zapłon oznacza pierwsze ΔT≥400 K. Brak przekroczenia w horyzoncie jest oznaczony jako wynik ucięty.
 

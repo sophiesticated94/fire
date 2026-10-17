@@ -1,13 +1,15 @@
+import {integrateBatch,type BatchOptions} from './ChemistryBatch';
 /// <reference types="@webgpu/types" />
 import table from './data/mechanism.json';
 import provenance from './data/provenance.json';
 import kinetics from './kinetics.wgsl?raw';
+import {GpuImplicitTile} from './GpuImplicitTile';
 import {ImplicitTile,type IntegrationOptions} from './ImplicitTile';
 
 export class Gri30 {
  readonly model='gpu-gri30-0.1-experimental';
  readonly species=table.species;readonly provenance=provenance;
- private mechanism:GPUBuffer;private pipeline:GPUComputePipeline;private integrator?:ImplicitTile;
+ private gpuIntegrator?:GpuImplicitTile;private mechanism:GPUBuffer;private pipeline:GPUComputePipeline;private integrator?:ImplicitTile;
  readonly source=`@group(0) @binding(0) var<storage,read> mechanism:array<f32>;
  @group(0) @binding(1) var<storage,read> states:array<f32>;
  @group(0) @binding(2) var<storage,read_write> output:array<f32>;
@@ -32,8 +34,13 @@ export class Gri30 {
   }finally{input.destroy();output.destroy();staging.destroy();}
  }
  async integrate(states:number[][],duration:number,signal?:AbortSignal,options:IntegrationOptions={}){
+  if(options.implementation==='gpu'){this.gpuIntegrator??=new GpuImplicitTile(this.device,this.mechanism,this.provenance.sha256);return {model:this.model,mechanismSha256:this.provenance.sha256,...await this.gpuIntegrator.integrate(states,duration,signal,options)};}
   this.integrator??=new ImplicitTile(this.device,this.mechanism);
   return {model:this.model,mechanismSha256:this.provenance.sha256,...await this.integrator.integrate(states,duration,signal,options)};
  }
- dispose(){this.mechanism.destroy();}
+ async integrateBatch(states:number[][],duration:number,signal?:AbortSignal,options:BatchOptions={}){
+  this.gpuIntegrator??=new GpuImplicitTile(this.device,this.mechanism,this.provenance.sha256);
+  return integrateBatch(this.gpuIntegrator,states,duration,signal,options);
+ }
+ dispose(){this.gpuIntegrator?.dispose();this.mechanism.destroy();}
 }

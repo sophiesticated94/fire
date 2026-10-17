@@ -1,3 +1,4 @@
 # Isolated validation/code-generation environment, not an FDS runtime dependency.
 cantera==3.2.0
 numpy==2.5.4
+pytest==9.1.1
