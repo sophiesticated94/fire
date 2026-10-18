@@ -60,7 +60,12 @@ export interface IntegrationOptions {
  checkpoint?:import('./ChemistryCheckpoint').TileCheckpoint;
  onCheckpoint?:(checkpoint:import('./ChemistryCheckpoint').TileCheckpoint)=>Promise<void>|void;
  inspection?:boolean;
- precision?:'float32';
+ /** Passive bounded trace for one reactor; no change to its physical schedule. */
+ traceCapacity?:number;
+ /** Stricter BE local error budget; coefficients in TOLERANCES stay unchanged. */
+ localErrorTarget?:number;
+ onTrace?:(chunk:ReturnType<typeof import('./ChemistryTrace').decodeTrace>)=>Promise<void>|void;
+ precision?:'float32'|'compensated-state';
  linearSolver?:'lu'|'refined-lu';
  onProgress?:(progress:{time:number;dt:number;attempts:number;rejected:number;wallMs:number})=>void;
 }

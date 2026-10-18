@@ -108,6 +108,8 @@ Obliczenie przypadku z terminala:
 
 ## Zakres naukowy i licencje
 
+[Forensics GRI30](docs/chemistry-forensics-1.4.md) zawiera diagnozę błędu przy zapłonie, niezależny backward Euler float64 oraz eksperymenty kompensowanego stanu i entalpii. Pełna bramka pozostaje niezaliczona; żaden z tych wariantów nie odblokowuje palnika.
+
 Eksperymentalna chemia IGNIS 1.4 ma osobną [instrukcję kampanii GRI30](docs/gri30-campaign.md): indywidualne kroki reaktorów na GPU, atomowe checkpointy, wspólny budżet 8 h i niezależna walidacja Cantery. [Raport odbioru](docs/chemistry-acceptance-1.4.md) oddziela testy infrastruktury od poprawności pełnych horyzontów. Palnik GPU pozostaje zablokowany do zaliczenia całej bramki.
 
 Przeczytaj [opis modelu i ograniczeń](docs/model.md). Jest to demonstracja edukacyjna oparta na CFD, bez deklaracji dokładności pomiarowej lub walidacji do zastosowań inżynierskich. N-heptan zastępuje pary świecy, a drewno korzysta z jawnie wskazanego przypadku weryfikacyjnego i uproszczonego modelu wilgoci. Utlenianie pozostałego żaru nie jest modelowane. Barwa i poświata są rekonstrukcją wizualną.

@@ -5,6 +5,28 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {atomicWrite,readCheckpoint,CampaignBudget} from '../scripts/chemistry_checkpoint.mjs';
+import {createHash} from 'node:crypto';
+
+test('a persisted numerical FAIL never becomes PASS or launches another GPU run',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'ignis-chemistry-failed-'));
+  try{
+    const script=readFileSync('scripts/chemistry_campaign.mjs','utf8');
+    const list=[...script.match(/\.update\(\[(.*?)\]\.map/s)[1].matchAll(/'([^']+)'/g)].map(m=>m[1]);
+    const sourceSha256=createHash('sha256').update(list.map(p=>readFileSync(p,'utf8').replaceAll('\r\n','\n')).join('\n')).digest('hex');
+    const version=readFileSync('src/gpu/chemistry/ChemistryCheckpoint.ts','utf8').match(/CHEMISTRY_VERSION = '([^']+)'/)[1];
+    const budget={limitMs:8*3600000,usedMs:1000,lease:null},ledger=join(dir,'budget.json');
+    atomicWrite(ledger,budget);
+    const statuses={kinetics:'FAIL',reactors:'INCOMPLETE',1:'INCOMPLETE',512:'INCOMPLETE',4096:'INCOMPLETE',65536:'INCOMPLETE'};
+    atomicWrite(join(dir,'campaign.checkpoint.json'),{version,mechanismSha256:JSON.parse(readFileSync('src/gpu/chemistry/data/provenance.json','utf8')).sha256,sourceSha256,
+      budget,linearSolver:'lu',precision:'float32',localErrorTarget:1,stopTime:0,statuses,results:[],validated:[]});
+    const run=spawnSync(process.execPath,['scripts/chemistry_campaign.mjs','--output',dir,'--budget-file',ledger],{encoding:'utf8',timeout:10000});
+    assert.equal(run.status,1,run.stderr);
+    const result=readCheckpoint(join(dir,'chemistry-campaign.json'));
+    assert.equal(result.status,'FAIL');assert.equal(result.criteria.kinetics,'FAIL');
+    assert.equal(result.adapter,undefined);assert.deepEqual(result.results,[]);
+    assert.ok(readCheckpoint(ledger).usedMs>=1000);
+  }finally{assert.ok(dir.startsWith(join(tmpdir(),'ignis-chemistry-failed-')));rmSync(dir,{recursive:true});}
+});
 
 test('atomic checkpoint retains verified previous generation and rejects tampering',()=>{
   const dir=mkdtempSync(join(tmpdir(),'ignis-chemistry-'));

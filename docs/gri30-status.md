@@ -2,6 +2,8 @@
 
 **Etap badawczy nie został odebrany. Palnik GPU nie jest włączony.** Kod chemii jest używany przez laboratorium testowe, nie przez produkcyjny solver gorącego powietrza. Nie zastosowano mechanizmu zastępczego ani danych HRR z FDS.
 
+[Diagnoza rozbieżności i eksperymenty naprawcze](chemistry-forensics-1.4.md) rozdzielają historyczny FAIL od odbioru nowych wariantów. Dominuje skumulowany błąd czasowy BE; dostępne są pasywne śledzenie, niezależny BE float64 i eksperymentalna kompensacja stanu/entalpii. Nie jest to pełna chemia double-single ani zaliczona bramka 0D.
+
 Nowy integrator GPU, checkpointy i harmonogram do 65 536 reaktorów są opisane w [instrukcji kampanii](gri30-campaign.md). Referencyjny prototyp opisany poniżej pozostaje dostępny. Krótki test 513 reaktorów sprawdza harmonogram, a nie pełne horyzonty skalowania. Bieżący raport odbioru znajduje się w [chemistry-acceptance-1.4.md](chemistry-acceptance-1.4.md).
 
 ## Mechanizm i implementacja
@@ -46,7 +48,7 @@ Nadal wymagane są pełne przebiegi wszystkich reaktorów, zgodność czasów za
 | Skala | Status pełnej niejawnej chemii |
 |---:|---|
 | 1 | Prototyp i pomiary; bramka reaktora niezamknięta |
-| 512 | Nieodebrane — wymaga harmonogramu kafli i poprawnego reaktora |
+| 512 | Nieodebrane — istniejący harmonogram czeka na pełny odbiór 0D |
 | 4096 | Nieodebrane |
 | 65 536 | Nieodebrane; brak prognozy wydajności |
 

@@ -1,5 +1,6 @@
 """Reconstruct exact inspected GPU Newton systems, independently solve in float64."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,6 +12,9 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def inspect(data):
     reports, systems = [], []
+    mechanism=ROOT/'src/gpu/chemistry/data/gri30.yaml'
+    if hashlib.sha256(mechanism.read_bytes()).hexdigest()!=json.loads((ROOT/'src/gpu/chemistry/data/provenance.json').read_text())['sha256']:
+        raise ValueError('Pinned GRI30 YAML integrity mismatch')
     gas=ct.Solution(str(ROOT/'src/gpu/chemistry/data/gri30.yaml'))
     def rhs(state):
         gas.TPY=state[0],ct.one_atm,state[1:]
@@ -37,7 +41,14 @@ def inspect(data):
         a[0] = jac[0,:54]
         a *= scale[None,:]/row_scale[:,None]
         b = -(trial-base-ctl[2]*jac[:,54])/row_scale
-        b[0] = -(jac[0,54]-ctl[3])/row_scale[0]
+        energy_low=0.
+        if data['layout'].get('low') is not None:
+            low_count=data['layout'].get('lowCount',324)
+            low=values[data['layout']['low']:data['layout']['low']+low_count]
+            energy_low=low[270]-low[271]
+            b=-(trial-base+low[:54]-low[108:162]-ctl[2]*jac[:,54])/row_scale
+            if low_count>=325:b[1:]+=ctl[2]*low[272:325]/row_scale[1:]
+        b[0] = -(jac[0,54]-ctl[3]+energy_low)/row_scale[0]
         # Probe consumes the exact representable float32 matrix, while the
         # float64 reconstruction additionally exposes matrix-assembly rounding.
         a32, b32 = a.astype(np.float32).astype(float), b.astype(np.float32).astype(float)
@@ -45,7 +56,7 @@ def inspect(data):
         gpu = delta/scale
         denom = np.linalg.norm(a32,np.inf)*np.linalg.norm(gpu,np.inf)+np.linalg.norm(b32,np.inf)
         reports.append(dict(cell=cell,dt=ctl[2],phase=ctl[8],nonlinearNorm=status[0],
-            linearSolveRequired=bool(status[0]>.1),gpuLuFailed=bool(status[1]),gpuReportedBackwardError=status[2],pivotRatio=status[3],
+            linearSolveRequired=bool(status[0]>.1*(ctl[39] if ctl[39]>0 else 1.)),gpuLuFailed=bool(status[1]),gpuReportedBackwardError=status[2],pivotRatio=status[3],
             canteraJacobianWeightedError=jac_error,sourceMassResidual=float(np.sum(jac[1:,54])),
             conditionInfinity=float(np.linalg.cond(a32,np.inf)),
             independentBackwardError=float(np.linalg.norm(a32@gpu-b32,np.inf)/max(1e-30,denom)),

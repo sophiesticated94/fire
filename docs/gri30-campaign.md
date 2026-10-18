@@ -2,6 +2,10 @@
 
 Palnik 3D pozostaje zablokowany. Przejście testów infrastruktury nie jest odbiorem reaktorów. Pełne GRI30, NASA7, niejawny Euler i tolerancje `rtol=1e-5`, `atol(Y)=1e-12`, `atol(T)=1e-3 K` pozostają wymagane.
 
+Aktualna [diagnoza zapłonu](chemistry-forensics-1.4.md) opisuje niezależny BE float64 i eksperymentalny wariant `--precision compensated-state --error-target 0.015625`. Bazowe współczynniki tolerancji pozostają niezmienione; ten wariant zaostrza wewnętrzny estymator i Newtona. Domyślny wariant nadal używa float32 i celu 1. Checkpointy nowego integratora mają schemat 4; dawnych prób nie konwertuje się automatycznie. Użyj nowego katalogu dla zmienionych źródeł lub wersji, zachowując dotychczasowy licznik budżetu.
+
+Bramka sprawdza również efektywne źródła 53 składników w zapisanych stanach Newtona, z uwzględnieniem części low. Próg i podłoga normalizacji są takie jak w istniejącym teście punktowym: `0.001` oraz `1e-8 s⁻¹`. Potwierdzony FAIL pozostaje FAIL przy ponownym uruchomieniu i blokuje pełne 0D oraz skalowanie; brak danych kontrolnych daje INCOMPLETE. PASS dwunastu początkowych stanów nie zastępuje tej kontroli.
+
 ## Uruchomienie i wznowienie
 
 ```powershell

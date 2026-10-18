@@ -1,15 +1,19 @@
-export const CHEMISTRY_VERSION = 'gri30-gpu-state-machine-2';
+export const CHEMISTRY_VERSION = 'gri30-gpu-state-machine-7';
 export const CONTROL_STRIDE = 40;
 export const TOLERANCES = {rtol: 1e-5, speciesAtol: 1e-12, temperatureAtol: 1e-3} as const;
 
 // Only accepted states are durable. A resumed trial restarts from accepted;
 // partially factored matrices and partially applied Newton updates are discarded.
 export interface TileCheckpoint {
-  schema: 1;
+  schema: 4;
   integrator: typeof CHEMISTRY_VERSION;
   mechanismSha256: string;
-  precision: 'float32';
+  precision: 'float32'|'compensated-state';
+  acceptedHigh?:number[][];
+  acceptedLow?:number[][];
+  targetEnthalpyLow?:number[];
   linearSolver: 'lu'|'refined-lu';
+  localErrorTarget: number;
   tolerances: typeof TOLERANCES;
   initial: number[][];
   accepted: number[][];
@@ -20,9 +24,9 @@ export interface TileCheckpoint {
 }
 
 export function validateCheckpoint(c: TileCheckpoint, initial: number[][], duration: number,
-  samples: number[], mechanism: string, linearSolver:'lu'|'refined-lu') {
-  if (c.schema !== 1 || c.integrator !== CHEMISTRY_VERSION || c.mechanismSha256 !== mechanism ||
-      c.precision !== 'float32' || c.linearSolver!==linearSolver || JSON.stringify(c.tolerances) !== JSON.stringify(TOLERANCES) ||
+  samples: number[], mechanism: string, linearSolver:'lu'|'refined-lu',localErrorTarget=1,precision:'float32'|'compensated-state'='float32') {
+  if (c.schema !== 4 || c.integrator !== CHEMISTRY_VERSION || c.mechanismSha256 !== mechanism || c.localErrorTarget!==localErrorTarget ||
+      c.precision !== precision || c.linearSolver!==linearSolver || JSON.stringify(c.tolerances) !== JSON.stringify(TOLERANCES) ||
       c.duration !== duration || JSON.stringify(c.initial) !== JSON.stringify(initial) ||
       JSON.stringify(c.sampleTimes) !== JSON.stringify(samples) || c.accepted.length !== initial.length ||
       c.control.length !== initial.length * CONTROL_STRIDE ||
@@ -32,8 +36,17 @@ export function validateCheckpoint(c: TileCheckpoint, initial: number[][], durat
         s[0] < 300 || s[0] > 3000 || s.slice(1).some(y => y < 0) ||
         Math.abs(s.slice(1).reduce((a,b) => a+b,0)-1) > 1e-5))
     throw Error('Incompatible or corrupt chemistry checkpoint');
+  if(precision==='compensated-state'){
+    if(c.targetEnthalpyLow?.length!==initial.length || c.targetEnthalpyLow.some(v=>!Number.isFinite(v) || Math.fround(v)!==v))throw Error('Invalid compensated enthalpy checkpoint');
+    if(c.acceptedHigh?.length!==initial.length || c.acceptedLow?.length!==initial.length ||
+      c.accepted.some((s,i)=>c.acceptedHigh![i]?.length!==54 || c.acceptedLow![i]?.length!==54 ||
+        s.some((v,j)=>!Number.isFinite(c.acceptedLow![i][j]) || !Number.isFinite(c.acceptedHigh![i][j]) ||
+          Math.fround(c.acceptedHigh![i][j])!==c.acceptedHigh![i][j] || Math.fround(c.acceptedLow![i][j])!==c.acceptedLow![i][j] ||
+          v!==c.acceptedHigh![i][j]+c.acceptedLow![i][j])))throw Error('Invalid compensated state checkpoint');
+  }
   for (let i=0;i<initial.length;i++) {
     const p=c.control.slice(i*CONTROL_STRIDE,(i+1)*CONTROL_STRIDE);
+    if(p[39]!==localErrorTarget)throw Error('Checkpoint local error budget mismatch');
     if (p[0]<0 || p[0]>Math.fround(duration) || !(p[1]>0) || p[20]<0 ||
         p[20]>samples.length || !Number.isInteger(p[20]) || p[9]<0 || p[9]>2 || p[19]<0 || p[19]>1 ||
         [8,9,10,11,12,13,14,15,19,20,24,25,28,29,30,31,32,33,34,35,36].some(i=>!Number.isInteger(p[i]) || p[i]<0 || p[i]>16777216) || ![1,2,3,4,5,6].includes(p[8]))

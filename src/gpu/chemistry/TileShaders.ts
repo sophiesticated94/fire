@@ -4,7 +4,8 @@ import {referenceLu} from './ImplicitTile';
 
 // Explicit SoA-in-buffers contract: 54 state values, 5*54 scratch values,
 // 54*55 Jacobian values, 8 LU metrics and 40 controller values per reactor.
-// Controller indices are shared with GpuImplicitTile and checkpoint schema 1.
+// Controller indices are shared with GpuImplicitTile and checkpoint schema 4;
+// field 39 is the explicitly selected local error budget.
 const bindings = `
 @group(0) @binding(0) var<storage,read_write> states:array<f32>;
 @group(0) @binding(1) var<storage,read_write> work:array<f32>;
@@ -46,6 +47,7 @@ export const tileLu = referenceLu
   .replace('let cell=group.x;', `if(lane==0u){enabled=select(0u,1u,control[group.x*40u+8u]==1. && control[group.x*40u+19u]==1.);}workgroupBarrier();
  if(workgroupUniformLoad(&enabled)==0u){return;}let cell=group.x;`)
   .replace('parameters[0]', 'control[cell*40u+2u]')
+  .replace('workgroupUniformLoad(&norm)<=.1', 'workgroupUniformLoad(&norm)<=.1*control[cell*40u+39u]')
   .replaceAll('base[offset+lane]', 'work[cell*270u+54u+lane]')
   .replaceAll('base[offset+row]', 'work[cell*270u+54u+row]')
   .replaceAll('hTarget[cell]', 'control[cell*40u+3u]')
@@ -129,13 +131,13 @@ fn reject(c:u32,reason:u32){
  }else{
   control[c+25u]+=1.;control[c+37u]=max(control[c+37u],control[c+22u]);
   if(control[c+22u]>.1){reject(c,5u);return;}
-  if(!(norm<control[c+6u] || norm<=.1)){
+  if(!(norm<control[c+6u] || norm<=.1*control[c+39u])){
    control[c+11u]+=1.;if(control[c+11u]>=8.){reject(c,3u);return;}
    control[c+5u]*=.5;control[c+8u]=2.;return;
   }
   control[c+10u]+=1.;
  }
- if(norm>.1){
+ if(norm>.1*control[c+39u]){
   if(control[c+10u]>=12.){reject(c,2u);return;}
   if(phase==3.){control[c+8u]=1.;return;}
   for(var i=0u;i<54u;i++){work[w+108u+i]=states[o+i];}
@@ -148,7 +150,7 @@ fn reject(c:u32,reason:u32){
  }else if(control[c+9u]==1.){
   for(var i=0u;i<54u;i++){work[w+54u+i]=states[o+i];}control[c+9u]=2.;
  }else{
-  let error=sqrt(errors[0]);control[c+23u]=error;
+  let error=sqrt(errors[0])/control[c+39u];control[c+23u]=error;
   if(!(error<=1.)){
    control[c+1u]=control[c+2u]*2.*max(.2,min(.5,.9/sqrt(error)));reject(c,1u);return;
   }

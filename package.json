@@ -10,11 +10,12 @@
     "test:e2e": "playwright test",
     "test:gpu": "playwright test --config playwright.gpu.config.ts --grep-invert \"benchmark|@chemistry-gate\"",
     "test:gpu:benchmark": "playwright test --config playwright.gpu.config.ts benchmark.spec.ts",
-    "test:gpu:chemistry": "playwright test --config playwright.gpu.config.ts chemistry.spec.ts chemistry-state.spec.ts reactor.spec.ts --grep-invert @chemistry-gate && node scripts/chemistry_campaign.mjs --output artifacts/gpu-v14/campaign-v2",
+    "test:gpu:chemistry": "playwright test --config playwright.gpu.config.ts chemistry.spec.ts chemistry-state.spec.ts reactor.spec.ts --grep-invert @chemistry-gate && node scripts/chemistry_campaign.mjs --output artifacts/gpu-v14/campaign-v7",
     "test:gpu:sor": "playwright test --config playwright.gpu.config.ts sor-benchmark.spec.ts",
     "test:chemistry:storage": "node --test tests/chemistry-checkpoint.test.mjs",
     "test:chemistry:state": "playwright test --config playwright.gpu.config.ts chemistry-state.spec.ts",
     "chemistry:campaign": "node scripts/chemistry_campaign.mjs",
+    "chemistry:forensics": "node scripts/chemistry_forensics.mjs",
     "test:gpu:chemistry:reference": "playwright test --config playwright.gpu.config.ts reactor.spec.ts --grep @chemistry-gate"
   },
   "dependencies": {

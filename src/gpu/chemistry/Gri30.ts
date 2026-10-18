@@ -9,7 +9,7 @@ import {ImplicitTile,type IntegrationOptions} from './ImplicitTile';
 export class Gri30 {
  readonly model='gpu-gri30-0.1-experimental';
  readonly species=table.species;readonly provenance=provenance;
- private gpuIntegrator?:GpuImplicitTile;private mechanism:GPUBuffer;private pipeline:GPUComputePipeline;private integrator?:ImplicitTile;
+ private gpuIntegrator?:GpuImplicitTile;private mechanism:GPUBuffer;private mechanismLow:GPUBuffer;private pipeline:GPUComputePipeline;private integrator?:ImplicitTile;
  readonly source=`@group(0) @binding(0) var<storage,read> mechanism:array<f32>;
  @group(0) @binding(1) var<storage,read> states:array<f32>;
  @group(0) @binding(2) var<storage,read_write> output:array<f32>;
@@ -20,6 +20,7 @@ export class Gri30 {
  ${kinetics}`;
  constructor(readonly device:GPUDevice){
   this.mechanism=device.createBuffer({size:table.data.length*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});device.queue.writeBuffer(this.mechanism,0,new Float32Array(table.data));
+  this.mechanismLow=device.createBuffer({size:table.data.length*4,usage:GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_DST});device.queue.writeBuffer(this.mechanismLow,0,new Float32Array(table.data.map(v=>v-Math.fround(v))));
   this.pipeline=device.createComputePipeline({layout:'auto',compute:{module:device.createShaderModule({code:this.source}),entryPoint:'main'}});
  }
  async evaluate(states:number[][]){
@@ -34,13 +35,14 @@ export class Gri30 {
   }finally{input.destroy();output.destroy();staging.destroy();}
  }
  async integrate(states:number[][],duration:number,signal?:AbortSignal,options:IntegrationOptions={}){
-  if(options.implementation==='gpu'){this.gpuIntegrator??=new GpuImplicitTile(this.device,this.mechanism,this.provenance.sha256);return {model:this.model,mechanismSha256:this.provenance.sha256,...await this.gpuIntegrator.integrate(states,duration,signal,options)};}
+  if(options.implementation==='gpu'){this.gpuIntegrator??=new GpuImplicitTile(this.device,this.mechanism,this.provenance.sha256,this.mechanismLow);return {model:this.model,mechanismSha256:this.provenance.sha256,...await this.gpuIntegrator.integrate(states,duration,signal,options)};}
+  if(options.precision==='compensated-state'||(options.localErrorTarget??1)!==1||options.traceCapacity||options.onTrace)throw Error('Precision, error policy and trace options require the GPU state-machine integrator');
   this.integrator??=new ImplicitTile(this.device,this.mechanism);
   return {model:this.model,mechanismSha256:this.provenance.sha256,...await this.integrator.integrate(states,duration,signal,options)};
  }
  async integrateBatch(states:number[][],duration:number,signal?:AbortSignal,options:BatchOptions={}){
-  this.gpuIntegrator??=new GpuImplicitTile(this.device,this.mechanism,this.provenance.sha256);
+  this.gpuIntegrator??=new GpuImplicitTile(this.device,this.mechanism,this.provenance.sha256,this.mechanismLow);
   return integrateBatch(this.gpuIntegrator,states,duration,signal,options);
  }
- dispose(){this.gpuIntegrator?.dispose();this.mechanism.destroy();}
+ dispose(){this.gpuIntegrator?.dispose();this.mechanism.destroy();this.mechanismLow.destroy();}
 }

@@ -12,6 +12,10 @@ const out=resolve(arg('--output','artifacts/gpu-v14/campaign'));
 const limit=Number(arg('--budget-ms',8*3600000));
 if(!(limit>0 && limit<=8*3600000))throw Error('Campaign budget must be in (0, 8h]');
 const linearSolver=arg('--linear-solver','lu');if(!['lu','refined-lu'].includes(linearSolver))throw Error('Invalid linear solver');
+const localErrorTarget=Math.fround(Number(arg('--error-target',1)));
+const precision=arg('--precision','float32');if(!['float32','compensated-state'].includes(precision))throw Error('Invalid precision mode');
+if(!(localErrorTarget>0&&localErrorTarget<=1))throw Error('Error target must be in (0, 1]');
+const stopTime=Number(arg('--stop-time',0));if(!Number.isFinite(stopTime)||stopTime<0)throw Error('Invalid diagnostic stop time');
 const python=resolve('tools/chemistry-venv/Scripts/python.exe');
 const caseOrder=[8,0,7,9,4,5,6,1,2,3];
 const fixtures=JSON.parse(readFileSync('tests/gpu/reactor-fixtures.json','utf8')).cases;
@@ -20,18 +24,20 @@ const budgetPath=resolve(arg('--budget-file','artifacts/gpu-v14/chemistry-budget
 const lockPath=budgetPath+'.lock';
 if(existsSync(lockPath)){const pid=Number(readFileSync(lockPath,'utf8'));let live=true;try{process.kill(pid,0);}catch{live=false;}if(live)throw Error('Another chemistry campaign owns this budget');unlinkSync(lockPath);}
 const lockFd=openSync(lockPath,'wx');writeFileSync(lockFd,String(process.pid));closeSync(lockFd);
-const sourceSha256=createHash('sha256').update(['src/gpu/chemistry/Gri30.ts','src/gpu/chemistry/ChemistryBatch.ts','src/gpu/chemistry/GpuImplicitTile.ts','src/gpu/chemistry/TileShaders.ts','src/gpu/chemistry/ImplicitTile.ts','src/gpu/chemistry/ChemistryCheckpoint.ts','src/gpu/chemistry/LinearPrecisionProbe.ts','scripts/inspect_chemistry_lu.py','scripts/chemistry_checkpoint.mjs','tests/gpu/reactor-fixtures.json','src/gpu/chemistry/data/mechanism.json','requirements-chemistry.txt','src/gpu/chemistry/kinetics.wgsl','src/gpu/chemistry/enthalpy.wgsl','scripts/chemistry_campaign.mjs','scripts/validate_gpu_chemistry.py'].map(p=>readFileSync(p,'utf8').replaceAll('\r\n','\n')).join('\n')).digest('hex');
+const sourceSha256=createHash('sha256').update(['src/gpu/chemistry/Gri30.ts','src/gpu/chemistry/ChemistryBatch.ts','src/gpu/chemistry/GpuImplicitTile.ts','src/gpu/chemistry/TileShaders.ts','src/gpu/chemistry/ChemistryTrace.ts','src/gpu/chemistry/CompensatedState.ts','src/gpu/chemistry/AccurateEnthalpy.ts','src/gpu/chemistry/ImplicitTile.ts','src/gpu/chemistry/ChemistryCheckpoint.ts','src/gpu/chemistry/LinearPrecisionProbe.ts','scripts/inspect_chemistry_lu.py','scripts/chemistry_effective_source.py','scripts/chemistry_checkpoint.mjs','tests/gpu/reactor-fixtures.json','src/gpu/chemistry/data/mechanism.json','src/gpu/chemistry/data/gri30.yaml','src/gpu/chemistry/data/provenance.json','requirements-chemistry.txt','src/gpu/chemistry/kinetics.wgsl','src/gpu/chemistry/enthalpy.wgsl','scripts/chemistry_campaign.mjs','scripts/validate_gpu_chemistry.py'].map(p=>readFileSync(p,'utf8').replaceAll('\r\n','\n')).join('\n')).digest('hex');
 const checkpointPath=resolve(out,'campaign.checkpoint.json');mkdirSync(out,{recursive:true});
 let saved=existsSync(checkpointPath)?readCheckpoint(checkpointPath):null;
-if(saved && (saved.mechanismSha256!==provenance.sha256 || saved.version!=='gri30-gpu-state-machine-2' || saved.budget.limitMs!==limit || saved.linearSolver!==linearSolver || saved.sourceSha256!==sourceSha256))throw Error('Campaign identity mismatch');
+if(saved && (saved.mechanismSha256!==provenance.sha256 || saved.version!=='gri30-gpu-state-machine-7' || saved.precision!==precision || saved.localErrorTarget!==localErrorTarget || saved.budget.limitMs!==limit || saved.linearSolver!==linearSolver || saved.sourceSha256!==sourceSha256))throw Error('Campaign identity mismatch');
 const ledger=existsSync(budgetPath)?readCheckpoint(budgetPath):saved?.budget;if(ledger&&ledger.limitMs!==limit)throw Error('Budget limit mismatch');
 const budget=new CampaignBudget(ledger,limit);
 let cancelled=false;process.on('SIGINT',()=>cancelled=true);process.on('SIGTERM',()=>cancelled=true);
-const state=saved??{version:'gri30-gpu-state-machine-2',mechanismSha256:provenance.sha256,sourceSha256,linearSolver,stage:'0d',scale:1,tile:0,caseIndex:0,results:[],validated:[],statuses:{kinetics:'INCOMPLETE',reactors:'INCOMPLETE',1:'INCOMPLETE',512:'INCOMPLETE',4096:'INCOMPLETE',65536:'INCOMPLETE'},budget:null};
+const state=saved??{version:'gri30-gpu-state-machine-7',mechanismSha256:provenance.sha256,sourceSha256,linearSolver,localErrorTarget,precision,stopTime,stage:'0d',scale:1,tile:0,caseIndex:0,results:[],validated:[],statuses:{kinetics:'INCOMPLETE',reactors:'INCOMPLETE',1:'INCOMPLETE',512:'INCOMPLETE',4096:'INCOMPLETE',65536:'INCOMPLETE'},budget:null};
+state.stopTime=stopTime;
+if(state.error==='Diagnostic time stop; full chemistry remains INCOMPLETE')state.error=null;
 function save(reserve=0){state.budget=budget.snapshot(Math.min(reserve,budget.remaining()));atomicWrite(budgetPath,state.budget);atomicWrite(checkpointPath,state);}
 function report(){
   const overall=Object.values(state.statuses).includes('FAIL')?'FAIL':Object.values(state.statuses).every(x=>x==='PASS')?'PASS':'INCOMPLETE';
-  atomicWrite(resolve(out,'chemistry-campaign.json'),{version:state.version,mechanismSha256:provenance.sha256,sourceSha256,status:overall,criteria:state.statuses,budget:budget.snapshot(),adapter:state.adapter,hardware:state.hardware,linearSolver,pointwise:state.pointwise,precisionProbes:state.precisionProbes??[],failure:state.failure??null,results:state.results,error:state.error??null});
+  atomicWrite(resolve(out,'chemistry-campaign.json'),{version:state.version,mechanismSha256:provenance.sha256,sourceSha256,status:overall,criteria:state.statuses,budget:budget.snapshot(),adapter:state.adapter,hardware:state.hardware,linearSolver,localErrorTarget,precision,stopTime,pointwise:state.pointwise,precisionProbes:state.precisionProbes??[],failure:state.failure??null,results:state.results,error:state.error??null});
   atomicWrite(resolve(out,'chemistry-profile.json'),{units:{wall:'ms',gpu:'ms'},profiles:state.results.map(x=>({id:x.id,profile:x.profile,rejections:x.rejections}))});
   atomicWrite(resolve(out,'chemistry-scale.json'),{status:overall,scales:[1,512,4096,65536].map(n=>({reactors:n,status:state.statuses[n]})),measurements:state.results.filter(x=>x.stage==='scale')});
   atomicWrite(resolve(out,'reactor-validation.json'),{status:state.statuses.reactors,validated:state.validated});
@@ -40,6 +46,7 @@ function report(){
 }
 let server,browser,page;const cancelPoll=setInterval(()=>{try{atomicWrite(budgetPath,budget.snapshot(Math.min(5000,budget.remaining())));}catch(error){state.error='Budget heartbeat failed: '+String(error);cancelled=true;}if(cancelled||existsSync(resolve(out,'cancel'))||budget.remaining()<5000){cancelled=true;page?.evaluate(()=>window.campaignAbort?.abort()).catch(()=>{});}},1000);
 try{
+ if(!Object.values(state.statuses).includes('FAIL')){
   if(budget.remaining()<10000)throw Error('Campaign budget exhausted before GPU startup');
   save(Math.min(60000,budget.remaining()));
   server=await createServer({mode:'gputest',server:{host:'127.0.0.1',port:5176,strictPort:true,hmr:false}});await server.listen();
@@ -59,7 +66,7 @@ try{
   if(adapter.vendor!=='nvidia' || adapter.device!=='0x28a1' || !state.hardware.adapters.some(a=>a.vendor==='0x10de'&&a.device===adapter.device))throw Error('RTX 4050 adapter is not confirmed');
   save(30000);
   // Pointwise RHS/Jacobian gate is measured afresh on this device.
-  if(state.statuses.kinetics!=='PASS'){
+  if(state.statuses.kinetics==='INCOMPLETE'){
     const point=await page.evaluate(async()=>{
       const fixtures=window.lab.chemistryFixtures,values=await window.chem.evaluate(fixtures.map(f=>f.state));
       return {values,fixtures};
@@ -96,20 +103,32 @@ try{
     const sampleTimes=state.refinementSamples??baseSamples;
     const old=existsSync(tilePath)?readCheckpoint(tilePath):null;
     const wallMs=Math.min(30000,Math.max(1,budget.remaining()-5000));save(wallMs+5000);
-    const result=await page.evaluate(async({caseId,count,horizon,sampleTimes,wallMs,checkpoint,linearSolver})=>{
+    const result=await page.evaluate(async({caseId,count,horizon,sampleTimes,wallMs,checkpoint,linearSolver,localErrorTarget,precision})=>{
       const f=window.lab.reactorFixtures.cases[caseId];window.campaignAbort=new AbortController();
       return await window.chem.integrate(Array.from({length:count},()=>f.initial),horizon,window.campaignAbort.signal,
-        {implementation:'gpu',linearSolver,sampleTimes,maxWallMs:wallMs,maxAttempts:16777216,checkpoint,inspection:true});
-    },{caseId,count:ids.length,horizon:f.horizon,sampleTimes,wallMs,checkpoint:old?.checkpoint,linearSolver});
+        {implementation:'gpu',linearSolver,localErrorTarget,precision,sampleTimes,maxWallMs:wallMs,maxAttempts:16777216,checkpoint,inspection:true});
+    },{caseId,count:ids.length,horizon:f.horizon,sampleTimes,wallMs,checkpoint:old?.checkpoint,linearSolver,localErrorTarget,precision});
     atomicWrite(tilePath,{caseIds:ids.map(()=>caseId),reactorIds:ids,checkpoint:result.checkpoint});
     writeFileSync(inspectionPath,JSON.stringify(result.inspection));
-    let linearVerified=false;
+    let linearVerified=false,effectiveSource=null;
     try{
     const luPath=resolve(out,sliceId+'.lu.json');
     save(Math.min(60000,budget.remaining()));
     const luCheck=spawnSync(python,['scripts/inspect_chemistry_lu.py',inspectionPath,luPath],{encoding:'utf8',timeout:Math.max(1,Math.min(60000,budget.remaining()-1000))});
     if(luCheck.status!==0)throw Error('LU inspection failed: '+luCheck.stderr);
     const inspected=JSON.parse(readFileSync(luPath,'utf8'));
+    const sourcePath=resolve(out,sliceId+'.source.json');
+    save(Math.min(60000,budget.remaining()));
+    const sourceCheck=spawnSync(python,['scripts/chemistry_effective_source.py',inspectionPath,sourcePath],{encoding:'utf8',timeout:Math.max(1,Math.min(60000,budget.remaining()-1000))});
+    if(sourceCheck.status!==0)throw Error('Effective RHS audit failed: '+sourceCheck.stderr);
+    effectiveSource=JSON.parse(readFileSync(sourcePath,'utf8'));
+    if(effectiveSource.status==='FAIL'){
+      save(Math.min(60000,budget.remaining()));
+      const confirmation=spawnSync(python,['scripts/chemistry_effective_source.py',inspectionPath,sourcePath+'.confirmation.json'],{encoding:'utf8',timeout:Math.max(1,Math.min(60000,budget.remaining()-1000))});
+      if(confirmation.status!==0 || JSON.parse(readFileSync(sourcePath+'.confirmation.json','utf8')).status!=='FAIL')throw Error('Effective RHS mismatch was not confirmed');
+      effectiveSource.confirmed=true;
+      state.statuses.kinetics='FAIL';state.failure={id,inspectionPath,reason:'Effective high+low RHS failed the unchanged 0.001 source criterion',effectiveSource};save();
+    }
     linearVerified=inspected.reports.length===Math.min(ids.length,4) && inspected.reports.every(r=>r.gpuLuFailed || !r.linearSolveRequired || (Number.isFinite(r.independentBackwardError) && r.independentBackwardError<=1e-5));
     const precision=await page.evaluate(async(systems)=>{
       const l=window.lab,d=window.chemDevice;
@@ -123,7 +142,7 @@ try{
     const check=spawnSync(python,['scripts/validate_gpu_chemistry.py',inputPath,validationPath],{encoding:'utf8',timeout:Math.max(1,Math.min(60000,budget.remaining()-1000))});
     if(check.status!==0)throw Error('Independent validation failed to execute: '+check.stderr);
     const validation=JSON.parse(readFileSync(validationPath,'utf8'));
-    state.results.push({id,sliceId,inspectionPath,validationPath,stage:state.stage,reactorIds:ids,profile:result.profile,stopReason:result.stopReason,rejections:result.diagnostics.rejections,physicalTime:result.diagnostics.time,validation:validation.status});
+    state.results.push({id,sliceId,inspectionPath,validationPath,stage:state.stage,reactorIds:ids,profile:result.profile,stopReason:result.stopReason,rejections:result.diagnostics.rejections,physicalTime:result.diagnostics.time,validation:validation.status,effectiveSource});
     if(validation.status==='FAIL'){
       // Independent re-evaluation confirms numerical discrepancies; resource
       // failures or incomplete horizons never become a numerical FAIL here.
@@ -132,8 +151,11 @@ try{
       if(confirm.status!==0 || JSON.parse(readFileSync(validationPath+'.confirmation.json','utf8')).status!=='FAIL')throw Error('Numerical mismatch could not be confirmed');
       state.statuses[scaling?state.scale:'reactors']='FAIL';state.failure={id,validationPath,stopReason:result.stopReason};save();break;
     }
+    if(effectiveSource?.status==='FAIL'&&effectiveSource.confirmed){save();break;}
+    if(effectiveSource?.status!=='PASS')throw Error('No confirmed effective RHS audit; cannot promote this result');
     if(!['completed','wall-limit','cancelled'].includes(result.stopReason)){state.error='Integrator stopped: '+result.stopReason;save();break;}
     console.log(JSON.stringify({id,time:result.diagnostics.time,horizon:f.horizon,rejected:result.diagnostics.rejected,wallMs:result.profile.wallMs,remainingMs:budget.remaining()}));
+    if(stopTime&&result.diagnostics.time>=stopTime){state.error='Diagnostic time stop; full chemistry remains INCOMPLETE';save();break;}
     if(result.stopReason==='completed'){
       if(!linearVerified)throw Error('Independent LU acceptance was not established; cannot promote this result');
       if(!scaling && !f.ignitionCensored){
@@ -157,6 +179,7 @@ try{
     }
     save();report();
   }
+ }
 }catch(error){state.error=String(error);console.error(error);}
 finally{
   clearInterval(cancelPoll);

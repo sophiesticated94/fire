@@ -1,4 +1,95 @@
 import {test,expect} from '@playwright/test';
+import {readFileSync} from 'node:fs';
+const conservationFixture=JSON.parse(readFileSync(new URL('./chemistry-conservation-fixture.json',import.meta.url),'utf8'));
+
+test('compensated BE preserves elements through the early small-step regression',async({page})=>{
+  await page.goto('/tests/gpu/harness.html');await page.waitForFunction(()=>!!(window as any).lab);
+  const r=await page.evaluate(async fixture=>{
+    const l=(window as any).lab;await l.create({cells:[8,8,16]});const g=new l.Gri30(l.engine.computeDevice);
+    try{return await g.integrate([fixture.initial],fixture.time,undefined,{implementation:'gpu',precision:'compensated-state',localErrorTarget:1/64,maxWallMs:90000});}
+    finally{g.dispose();}
+  },conservationFixture);
+  expect(r.mechanismSha256).toBe(conservationFixture.mechanismSha256);expect(r.stopReason).toBe('completed');
+  expect(Math.abs(r.checkpoint.control[3]+r.checkpoint.targetEnthalpyLow![0]-conservationFixture.enthalpyRoundedInitial)).toBeLessThanOrEqual(1e-5);
+  expect(Math.abs(r.states[0]-conservationFixture.state[0])).toBeLessThanOrEqual(1);
+  for(let i=1;i<54;i++)expect(Math.abs(r.states[i]-conservationFixture.state[i])).toBeLessThanOrEqual(1e-12+.05*Math.abs(conservationFixture.state[i]));
+  const sum=r.states.slice(1).reduce((a:number,b:number)=>a+b,0);
+  expect(Math.abs(sum-1)).toBeLessThanOrEqual(1e-5);
+  for(let e=0;e<conservationFixture.elements.length;e++){
+    const value=conservationFixture.elementMatrix[e].reduce((s:number,x:number,i:number)=>s+x*r.states[i+1]/sum,0);
+    expect(Math.abs(value-conservationFixture.elements[e])/Math.max(1e-30,Math.abs(conservationFixture.elements[e]))).toBeLessThanOrEqual(1e-5);
+  }
+});
+
+test('stricter BE error budget is explicit, checkpointed and cannot loosen tolerances',async({page})=>{
+  await page.goto('/tests/gpu/harness.html');await page.waitForFunction(()=>!!(window as any).lab);
+  const r=await page.evaluate(async()=>{
+    const l=(window as any).lab;await l.create({cells:[8,8,16]});const g=new l.Gri30(l.engine.computeDevice);
+    const initial=[l.reactorFixtures.cases[8].initial];
+    try{
+      const base=await g.integrate(initial,1e-7,undefined,{implementation:'gpu',maxWallMs:30000});
+      const tight=await g.integrate(initial,1e-7,undefined,{implementation:'gpu',localErrorTarget:1/64,maxWallMs:30000});
+      let mismatch=false,loosened=false,legacy=false;
+      try{await g.integrate(initial,1e-7,undefined,{implementation:'gpu',checkpoint:tight.checkpoint,maxWallMs:30000});}catch{mismatch=true;}
+      try{await g.integrate(initial,1e-7,undefined,{implementation:'gpu',localErrorTarget:2});}catch{loosened=true;}
+      try{await g.integrate(initial,1e-7,undefined,{implementation:'gpu',checkpoint:{...base.checkpoint,schema:1}});}catch{legacy=true;}
+      return {base,tight,mismatch,loosened,legacy};
+    }finally{g.dispose();}
+  });
+  expect(r.tight.stopReason).toBe('completed');expect(r.tight.checkpoint.schema).toBe(4);
+  expect(r.tight.checkpoint.localErrorTarget).toBe(1/64);
+  expect(r.tight.checkpoint.tolerances).toEqual(r.base.checkpoint.tolerances);
+  expect(r.tight.diagnostics.acceptedSteps).toBeGreaterThanOrEqual(r.base.diagnostics.acceptedSteps);
+  expect(r.mismatch&&r.loosened&&r.legacy).toBe(true);
+});
+
+test('compensated state keeps low parts through cancellation and resume',async({page})=>{
+  await page.goto('/tests/gpu/harness.html');await page.waitForFunction(()=>!!(window as any).lab);
+  const r=await page.evaluate(async()=>{
+    const l=(window as any).lab;await l.create({cells:[8,8,16]});const g=new l.Gri30(l.engine.computeDevice);
+    const initial=[l.reactorFixtures.cases[8].initial,l.reactorFixtures.cases[0].initial],abort=new AbortController();
+    const options={implementation:'gpu',precision:'compensated-state',localErrorTarget:1/64,maxWallMs:30000,sampleTimes:[1e-8]};
+    try{
+      const first=await g.integrate(initial,1e-7,abort.signal,{...options,onProgress:()=>abort.abort()});
+      const resumed=await g.integrate(initial,1e-7,undefined,{...options,checkpoint:first.checkpoint});
+      const full=await g.integrate(initial,1e-7,undefined,options);
+      const baseline=await g.integrate(initial,1e-7,undefined,{implementation:'gpu',maxWallMs:30000});
+      let rejected=false;try{await g.integrate(initial,1e-7,undefined,{...options,checkpoint:{...first.checkpoint,acceptedLow:[[NaN]]}});}catch{rejected=true;}
+      return {first,resumed,full,baseline,rejected,reference:initial.map((_:any,i:number)=>l.reactorFixtures.cases[i===0?8:0].points.find((p:any)=>p.time===1e-7).state),species:l.reactorFixtures.cases[8].initial.length};
+    }finally{g.dispose();}
+  });
+  expect(r.resumed.stopReason).toBe('completed');expect(r.full.stopReason).toBe('completed');expect(r.baseline.stopReason).toBe('completed');
+  expect(r.full.checkpoint.acceptedLow!.flat().some((x:number)=>x!==0)).toBe(true);
+  expect(r.rejected).toBe(true);
+  for(let i=0;i<108;i++)expect(Math.abs(r.resumed.states[i]-r.full.states[i])).toBeLessThanOrEqual(i%54===0?1:1e-12+1e-5*Math.abs(r.full.states[i]));
+  expect(r.full.trajectory.every(Number.isFinite)).toBe(true);
+  for(let cell=0;cell<2;cell++)for(let i=1;i<54;i++)expect(Math.abs(r.full.states[cell*54+i]-r.reference[cell][i])).toBeLessThanOrEqual(1e-12+.05*Math.abs(r.reference[cell][i]));
+});
+
+test('passive chemistry trace preserves accepted steps and streams without gaps',async({page})=>{
+  await page.goto('/tests/gpu/harness.html');await page.waitForFunction(()=>!!(window as any).lab);
+  const r=await page.evaluate(async()=>{
+    const l=(window as any).lab;await l.create({cells:[8,8,16]});const g=new l.Gri30(l.engine.computeDevice);
+    const initial=[l.reactorFixtures.cases[8].initial],chunks:any[]=[];
+    try{
+      const plain=await g.integrate(initial,1e-6,undefined,{implementation:'gpu',maxWallMs:30000});
+      const traced=await g.integrate(initial,1e-6,undefined,{implementation:'gpu',maxWallMs:30000,traceCapacity:48,onTrace:(c:any)=>chunks.push(c)});
+      const plainAgain=await g.integrate(initial,1e-6,undefined,{implementation:'gpu',maxWallMs:30000});
+      const ring=await g.integrate(initial,1e-6,undefined,{implementation:'gpu',maxWallMs:30000,traceCapacity:12});
+      return {plain,traced,plainAgain,chunks,ring};
+    }finally{g.dispose();}
+  });
+  expect(r.traced.stopReason).toBe('completed');expect(r.traced.states).toEqual(r.plain.states);
+  expect(r.plainAgain.states).toEqual(r.plain.states);
+  expect(r.traced.checkpoint.control).toEqual(r.plain.checkpoint.control);
+  expect(r.traced.gpuInitial).toEqual(r.traced.checkpoint.initial[0].map(Math.fround));
+  const records=r.chunks.flatMap((c:any)=>c.records);
+  expect(records.map((x:any)=>x.sequence)).toEqual(records.map((_:any,i:number)=>i));
+  expect(r.chunks.every((c:any)=>c.dropped===0)).toBe(true);
+  expect(r.ring.trace!.dropped).toBeGreaterThan(0);
+  expect(r.ring.trace!.records).toHaveLength(12);
+  expect(r.traced.profile.dispatches/r.traced.profile.statusReads).toBeLessThanOrEqual(32);
+});
 
 test('GPU state machine completes independent reactors and matches Cantera samples',async({page})=>{
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});

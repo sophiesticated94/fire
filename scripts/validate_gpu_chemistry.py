@@ -5,6 +5,7 @@ reactor and sample, including partial runs. Physical times are rounded to the
 actual float32 schedule before ReactorNet.advance(t).
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -20,7 +21,9 @@ def validate(payload):
     fixtures = json.loads((ROOT / 'tests/gpu/reactor-fixtures.json').read_text())['cases']
     cp = payload['checkpoint']
     expected_hash = json.loads((ROOT / 'src/gpu/chemistry/data/provenance.json').read_text())['sha256']
-    if cp['mechanismSha256'] != expected_hash or cp['precision'] != 'float32':
+    if hashlib.sha256((ROOT/'src/gpu/chemistry/data/gri30.yaml').read_bytes()).hexdigest()!=expected_hash:
+        raise ValueError('Pinned GRI30 YAML integrity mismatch')
+    if cp['mechanismSha256'] != expected_hash or cp['precision'] not in ['float32','compensated-state']:
         raise ValueError('Unsupported mechanism or precision')
     reports = []
     for cell, case_id in enumerate(payload['caseIds']):
